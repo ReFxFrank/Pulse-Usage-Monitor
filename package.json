@@ -1,0 +1,25 @@
+{
+  "name": "pulse-usage-dashboard",
+  "version": "1.0.0",
+  "description": "A local, zero-dependency Claude Code usage dashboard. Reads ~/.claude read-only and serves a self-refreshing dashboard on http://localhost:4747.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "pulse": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "inspect-schema": "node server.js --inspect-schema"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "usage",
+    "dashboard",
+    "monitor",
+    "local",
+    "zero-dependency"
+  ]
+}

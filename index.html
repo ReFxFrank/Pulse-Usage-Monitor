@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulse — Claude Code usage</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230e0d13'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%239085e9'/%3E%3C/svg%3E">
+<style>
+  /* ---- theme: a few variables, easy to re-skin (lavender accent) ---- */
+  :root {
+    --accent:        #9085e9;  /* lavender */
+    --accent-dim:    #6c62c4;
+    --bg:            #0e0d13;
+    --surface:       #17151f;
+    --surface-2:     #1e1c28;
+    --border:        #2a2833;
+    --text:          #f2f1f8;
+    --text-2:        #b6b3c7;
+    --text-3:        #7c7995;
+    --good:          #199e70;
+    --warn:          #c98500;
+    /* categorical series palette (validated CVD-safe on the dark surface) */
+    --s0: #9085e9; --s1: #199e70; --s2: #c98500; --s3: #3987e5; --s4: #e66767; --s5: #d95926;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 24px 20px 60px; }
+
+  /* ---- header ---- */
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .pulse-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 var(--accent); animation: pulse 2.4s ease-out infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(144,133,233,.55); } 70% { box-shadow: 0 0 0 9px rgba(144,133,233,0); } 100% { box-shadow: 0 0 0 0 rgba(144,133,233,0); } }
+  h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: .2px; }
+  .brand .sub { color: var(--text-3); font-size: 13px; margin-left: 2px; }
+  .meta { text-align: right; font-size: 12.5px; color: var(--text-3); }
+  .meta .updated { color: var(--text-2); }
+  .meta .updated b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+  /* ---- grid & cards ---- */
+  .grid { display: grid; gap: 14px; }
+  .stats { grid-template-columns: repeat(4, 1fr); margin-bottom: 14px; }
+  .cols-2 { grid-template-columns: 1fr 1fr; margin-bottom: 14px; }
+  @media (max-width: 880px) { .stats { grid-template-columns: repeat(2, 1fr); } .cols-2 { grid-template-columns: 1fr; } }
+  @media (max-width: 520px) { .stats { grid-template-columns: 1fr; } }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 17px; position: relative; }
+  .card h2 { font-size: 11.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--text-3); margin: 0 0 12px; }
+  .card.tile h2 { margin-bottom: 8px; }
+
+  .big { font-family: var(--mono); font-size: 30px; font-weight: 600; line-height: 1.05; letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
+  .big.accent { color: var(--accent); }
+  .unit { font-size: 15px; color: var(--text-3); font-weight: 500; margin-left: 2px; }
+  .sub2 { font-size: 12.5px; color: var(--text-2); margin-top: 7px; font-variant-numeric: tabular-nums; }
+  .sub2 .mono { font-family: var(--mono); }
+  .row-facts { display: flex; gap: 18px; margin-top: 10px; flex-wrap: wrap; }
+  .fact { font-size: 12px; color: var(--text-3); }
+  .fact b { display: block; font-family: var(--mono); font-size: 15px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 1px; }
+
+  /* progress bar for reset countdown */
+  .track { height: 6px; background: var(--surface-2); border-radius: 4px; overflow: hidden; margin-top: 13px; }
+  .track > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-dim), var(--accent)); border-radius: 4px; transition: width .6s ease; }
+
+  /* vs-peak chip */
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; margin-top: 11px; font-variant-numeric: tabular-nums; }
+  .chip b { color: var(--accent); font-family: var(--mono); }
+
+  /* ---- charts ---- */
+  .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  svg { display: block; width: 100%; overflow: visible; }
+  .axis text { fill: var(--text-3); font-size: 10px; font-family: var(--mono); }
+  .axis line { stroke: var(--border); }
+
+  /* horizontal bars (model / source) */
+  .hbars { display: flex; flex-direction: column; gap: 11px; margin-top: 2px; }
+  .hbar { display: grid; grid-template-columns: 130px 1fr auto; align-items: center; gap: 11px; font-size: 13px; }
+  .hbar .name { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hbar .name i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 7px; vertical-align: -1px; }
+  .hbar .barwrap { background: var(--surface-2); border-radius: 5px; height: 16px; overflow: hidden; }
+  .hbar .barwrap > i { display: block; height: 100%; border-radius: 5px; transition: width .5s ease; }
+  .hbar .val { font-family: var(--mono); font-size: 12.5px; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .hbar .val small { color: var(--text-3); }
+
+  /* ---- recent sessions table ---- */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); font-weight: 600; padding: 0 10px 9px; border-bottom: 1px solid var(--border); }
+  th.num, td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td { padding: 10px; border-bottom: 1px solid var(--surface-2); color: var(--text-2); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.title { color: var(--text); max-width: 460px; }
+  .badge { font-size: 10.5px; padding: 2px 7px; border-radius: 5px; background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border); font-family: var(--mono); white-space: nowrap; }
+  .ago { color: var(--text-3); font-size: 12px; }
+
+  /* ---- footer / states ---- */
+  footer { margin-top: 26px; color: var(--text-3); font-size: 12px; line-height: 1.6; }
+  footer .disclaimer { border-left: 2px solid var(--accent-dim); padding-left: 12px; }
+  .empty { text-align: center; padding: 70px 20px; color: var(--text-3); }
+  .empty h2 { font-size: 18px; color: var(--text-2); margin: 0 0 8px; text-transform: none; letter-spacing: 0; }
+  .empty code { font-family: var(--mono); color: var(--accent); background: var(--surface); padding: 2px 7px; border-radius: 6px; }
+  .warnbar { background: rgba(201,133,0,.12); border: 1px solid rgba(201,133,0,.4); color: #e9c06a; border-radius: 10px; padding: 9px 13px; font-size: 12.5px; margin-bottom: 14px; }
+
+  /* ---- tooltip ---- */
+  #tip { position: fixed; pointer-events: none; z-index: 50; background: #0a0910; border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; font-size: 12px; color: var(--text); box-shadow: 0 8px 26px rgba(0,0,0,.55); opacity: 0; transition: opacity .1s; max-width: 260px; }
+  #tip .t-date { font-family: var(--mono); color: var(--text-2); margin-bottom: 6px; font-size: 11.5px; }
+  #tip .t-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; font-variant-numeric: tabular-nums; }
+  #tip .t-row i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 6px; vertical-align: -1px; }
+  #tip .t-row .tv { font-family: var(--mono); }
+  #tip .t-total { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; font-weight: 600; }
+  .status-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; vertical-align:1px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <span class="pulse-dot" title="live"></span>
+      <h1>Pulse</h1>
+      <span class="sub">Claude&nbsp;Code usage</span>
+    </div>
+    <div class="meta">
+      <div class="updated">updated <b id="updated">—</b> · refreshes every 10s</div>
+      <div id="scope">—</div>
+    </div>
+  </header>
+
+  <div id="app"><div class="empty"><h2>Connecting…</h2></div></div>
+
+  <footer>
+    <div class="disclaimer" id="disclaimer">
+      Costs are <b>estimates</b> at Claude API list prices — on a Pro/Max subscription they express
+      relative usage, not a bill. Pulse runs entirely on your machine, reads <code>~/.claude</code> read-only,
+      and makes no network calls.
+    </div>
+  </footer>
+</div>
+
+<div id="tip"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var SERIES = ['#9085e9','#199e70','#c98500','#3987e5','#e66767','#d95926'];
+  var ACCENT = '#9085e9';
+  var SURFACE = '#17151f';
+  var app = document.getElementById('app');
+  var tip = document.getElementById('tip');
+  var last = null;         // last payload
+  var sourceColor = {};    // source name -> color (stable by entity)
+  var modelColor = {};
+
+  // ---------- formatters ----------
+  function money(v) {
+    if (v == null) return '—';
+    if (v >= 1000) return '$' + (v / 1000).toFixed(2) + 'k';
+    if (v >= 100) return '$' + v.toFixed(0);
+    if (v >= 10) return '$' + v.toFixed(2);
+    return '$' + v.toFixed(3);
+  }
+  function money2(v) { return v == null ? '—' : '$' + v.toFixed(v < 10 ? 3 : 2); }
+  function tokens(v) {
+    if (v == null) return '—';
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+    return String(Math.round(v));
+  }
+  function pct(v) { return v == null ? '—' : v.toFixed(0) + '%'; }
+  function num(v) { return v == null ? '—' : v.toLocaleString(); }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function clockTime(ms) { var d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
+  function hm(ms) { var d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function dur(ms) {
+    if (ms == null || ms < 0) return '—';
+    var s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return h + 'h ' + pad(m) + 'm ' + pad(sec) + 's';
+  }
+  function ago(ms) {
+    var d = Date.now() - ms;
+    if (d < 60000) return 'just now';
+    if (d < 3600000) return Math.floor(d / 60000) + 'm ago';
+    if (d < 86400000) return Math.floor(d / 3600000) + 'h ago';
+    return Math.floor(d / 86400000) + 'd ago';
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]); }); }
+  function dayLabel(ds) { var p = ds.split('-'); return p[1] + '/' + p[2]; }
+
+  function colorFor(map, name, idx) {
+    if (!(name in map)) map[name] = SERIES[Object.keys(map).length % SERIES.length];
+    return map[name];
+  }
+
+  // ---------- tooltip ----------
+  function showTip(html, x, y) {
+    tip.innerHTML = html;
+    tip.style.opacity = '1';
+    var w = tip.offsetWidth, h = tip.offsetHeight;
+    var left = x + 14, top = y + 14;
+    if (left + w > window.innerWidth - 8) left = x - w - 14;
+    if (top + h > window.innerHeight - 8) top = y - h - 14;
+    tip.style.left = Math.max(8, left) + 'px';
+    tip.style.top = Math.max(8, top) + 'px';
+  }
+  function hideTip() { tip.style.opacity = '0'; }
+
+  // ---------- fetch loop ----------
+  function refresh() {
+    fetch('/api/summary', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { last = d; render(d); })
+      .catch(function (e) {
+        app.innerHTML = '<div class="empty"><h2>Can’t reach the server</h2><div>' + esc(String(e)) + '</div></div>';
+      });
+  }
+
+  // ---------- render ----------
+  function render(d) {
+    // assign stable colors by entity, in the payload's (sorted) source order
+    sourceColor = {}; modelColor = {};
+    (d.sources || []).forEach(function (s) { colorFor(sourceColor, s); });
+    Object.keys(d.byModel || {}).sort().forEach(function (m) { colorFor(modelColor, m); });
+
+    document.getElementById('updated').textContent = clockTime(d.generatedAt);
+    document.getElementById('scope').textContent =
+      num(d.totals.messages) + ' msgs · ' + num(d.totals.sessions) + ' sessions · ' +
+      (d.singleSource ? 'source: ' + (d.sources[0] || 'cli') : d.sources.length + ' sources');
+
+    if (!d.hasData) {
+      app.innerHTML = '<div class="empty"><h2>No usage yet</h2>' +
+        '<div>Pulse is watching <code>~/.claude/projects</code>. Run Claude Code and your usage will appear here — the page refreshes every 10&nbsp;seconds.</div></div>';
+      return;
+    }
+
+    var html = '';
+    if (d.selfCheck && !d.selfCheck.ok) {
+      html += '<div class="warnbar">⚠ internal self-check: ' + esc(d.selfCheck.issues.join('; ')) + '</div>';
+    }
+
+    // ---- stat tiles ----
+    html += '<div class="grid stats">';
+    html += currentBlockTile(d);
+    html += burnTile(d);
+    html += rollupTile('Today', d.today);
+    html += rollupTile('Last 7 days', d.week);
+    html += '</div>';
+
+    // ---- 30-day spend (stacked bars + cumulative sparkline) ----
+    html += '<div class="card" id="c-30d"><div class="chart-head"><h2>30-day spend</h2>' + legendHtml(d) + '</div>' +
+            '<div id="bars30"></div></div>';
+
+    // ---- model + source bars ----
+    html += '<div class="grid ' + (d.singleSource ? 'cols-2' : 'cols-2') + '">';
+    html += '<div class="card"><h2>By model</h2><div id="byModel"></div></div>';
+    if (d.singleSource) {
+      html += '<div class="card"><h2>By source</h2>' +
+              '<div class="sub2" style="margin-top:2px">Single source — <b style="color:var(--text-2)">' + esc(d.sources[0] || 'cli') + '</b> accounts for 100% of usage.</div>' +
+              '<div id="byModel2" style="margin-top:12px"></div></div>';
+    } else {
+      html += '<div class="card"><h2>By source</h2><div id="bySource"></div></div>';
+    }
+    html += '</div>';
+
+    // ---- recent sessions ----
+    html += '<div class="card"><h2>Recent sessions</h2>' + sessionsTable(d) + '</div>';
+
+    app.innerHTML = html;
+
+    // draw charts (need DOM present)
+    drawStacked(d);
+    drawHBars('byModel', modelRows(d), 'model');
+    if (d.singleSource) drawSparklineInto('byModel2', d); else drawHBars('bySource', sourceRows(d), 'source');
+
+    startCountdown();
+  }
+
+  // ---- current block tile ----
+  function currentBlockTile(d) {
+    var cb = d.currentBlock;
+    if (!cb) {
+      return '<div class="card tile"><h2>Current 5h block</h2>' +
+        '<div class="big" style="color:var(--text-3)">idle</div>' +
+        '<div class="sub2">No active usage window. A new block starts on your next request.</div></div>';
+    }
+    var vs = cb.vsPeakCostPct;
+    var html = '<div class="card tile"><h2>Current 5h block</h2>' +
+      '<div class="big accent">' + money2(cb.cost) + '</div>' +
+      '<div class="sub2"><span class="mono">' + tokens(cb.tokens) + '</span> tokens · <span class="mono">' + num(cb.messages) + '</span> msgs</div>';
+    if (vs != null) html += '<div class="chip">vs heaviest block <b>' + pct(vs) + '</b></div>';
+    html += '<div class="track"><i id="resetbar" style="width:0%"></i></div>' +
+      '<div class="sub2" id="reset">resets in <span class="mono" data-reset></span> · ' + hm(cb.start) + '→' + hm(cb.end) + '</div>';
+    html += '</div>';
+    return html;
+  }
+
+  function burnTile(d) {
+    var b = d.burnRate;
+    if (!b) return '<div class="card tile"><h2>Burn rate · 60&nbsp;min</h2><div class="big" style="color:var(--text-3)">—</div><div class="sub2">No activity in the last hour.</div></div>';
+    return '<div class="card tile"><h2>Burn rate · 60&nbsp;min</h2>' +
+      '<div class="big">' + money2(b.dollarsPerHour) + '<span class="unit">/hr</span></div>' +
+      '<div class="sub2"><span class="mono">' + tokens(b.tokensPerMin) + '</span> tok/min · window ' + b.elapsedMin.toFixed(0) + 'm</div></div>';
+  }
+
+  function rollupTile(label, r) {
+    return '<div class="card tile"><h2>' + label + '</h2>' +
+      '<div class="big">' + money2(r.cost) + '</div>' +
+      '<div class="row-facts"><div class="fact">tokens<b>' + tokens(r.tokens) + '</b></div>' +
+      '<div class="fact">messages<b>' + num(r.messages) + '</b></div></div></div>';
+  }
+
+  // ---- legend ----
+  function legendHtml(d) {
+    if (d.singleSource) return '<div class="legend"><span><i style="background:' + ACCENT + '"></i>' + esc(d.sources[0] || 'cli') + '</span></div>';
+    var out = '<div class="legend">';
+    (d.sources || []).forEach(function (s) { out += '<span><i style="background:' + colorFor(sourceColor, s) + '"></i>' + esc(s) + '</span>'; });
+    return out + '</div>';
+  }
+
+  // ---- stacked bar chart (SVG) ----
+  function drawStacked(d) {
+    var host = document.getElementById('bars30');
+    if (!host) return;
+    var days = d.daily;
+    var W = host.clientWidth || 900, H = 190;
+    var padL = 6, padR = 6, padB = 20, padT = 8;
+    var innerW = W - padL - padR, innerH = H - padT - padB;
+    var n = days.length;
+    var gap = 3;
+    var bw = Math.max(2, (innerW - gap * (n - 1)) / n);
+    var max = 0;
+    days.forEach(function (b) { if (b.total > max) max = b.total; });
+    if (max <= 0) max = 1;
+    var srcs = d.sources;
+
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Daily spend, last 30 days">';
+    // baseline
+    svg += '<g class="axis"><line x1="' + padL + '" y1="' + (padT + innerH) + '" x2="' + (W - padR) + '" y2="' + (padT + innerH) + '"/></g>';
+
+    for (var i = 0; i < n; i++) {
+      var b = days[i];
+      var x = padL + i * (bw + gap);
+      var y = padT + innerH;
+      var totalH = (b.total / max) * innerH;
+      // stack segments bottom-up in source order
+      var acc = 0;
+      var segTop = padT + innerH; // will move up
+      var topMost = true;
+      // draw from first source (bottom) to last (top); rounding on the very top
+      var segs = [];
+      for (var si = 0; si < srcs.length; si++) {
+        var s = srcs[si];
+        var c = (b.bySource && b.bySource[s]) || 0;
+        if (c <= 0) continue;
+        segs.push({ s: s, c: c });
+      }
+      var drawnH = 0;
+      for (var k = 0; k < segs.length; k++) {
+        var seg = segs[k];
+        var segH = (seg.c / max) * innerH;
+        var isTop = (k === segs.length - 1);
+        var yy = padT + innerH - drawnH - segH;
+        var col = d.singleSource ? ACCENT : colorFor(sourceColor, seg.s);
+        var r = isTop ? Math.min(4, bw / 2, segH) : 0;
+        svg += rectPath(x, yy, bw, segH, r, col);
+        drawnH += segH + (k < segs.length - 1 ? 2 : 0); // 2px surface gap between fills
+      }
+      // invisible hover target spanning the full bar column
+      svg += '<rect x="' + x + '" y="' + padT + '" width="' + bw + '" height="' + innerH +
+             '" fill="transparent" data-bar="' + i + '" style="cursor:pointer"/>';
+      // sparse day labels
+      if (n <= 31 && (i % 5 === 0 || i === n - 1)) {
+        svg += '<text class="axis" x="' + (x + bw / 2) + '" y="' + (H - 6) + '" text-anchor="middle">' + dayLabel(b.date) + '</text>';
+      }
+    }
+    // y max label
+    svg += '<text class="axis" x="' + padL + '" y="' + (padT + 4) + '" fill="' + '#7c7995' + '">' + money(max) + '</text>';
+    svg += '</svg>';
+    host.innerHTML = svg;
+
+    // hover
+    var svgEl = host.querySelector('svg');
+    svgEl.addEventListener('mousemove', function (ev) {
+      var t = ev.target;
+      if (t && t.getAttribute && t.getAttribute('data-bar') != null) {
+        var b = days[+t.getAttribute('data-bar')];
+        var rows = '';
+        srcs.forEach(function (s) {
+          var c = (b.bySource && b.bySource[s]) || 0;
+          if (c <= 0) return;
+          var col = d.singleSource ? ACCENT : colorFor(sourceColor, s);
+          rows += '<div class="t-row"><span><i style="background:' + col + '"></i>' + esc(s) + '</span><span class="tv">' + money2(c) + '</span></div>';
+        });
+        if (!rows) rows = '<div class="t-row" style="color:var(--text-3)">no spend</div>';
+        var html = '<div class="t-date">' + b.date + '</div>' + rows +
+          '<div class="t-row t-total"><span>total</span><span class="tv">' + money2(b.total) + '</span></div>' +
+          '<div class="t-row" style="color:var(--text-3)"><span>tokens</span><span class="tv">' + tokens(b.tokens) + '</span></div>';
+        showTip(html, ev.clientX, ev.clientY);
+      } else { hideTip(); }
+    });
+    svgEl.addEventListener('mouseleave', hideTip);
+  }
+
+  function rectPath(x, y, w, h, r, fill) {
+    if (h <= 0) return '';
+    if (r <= 0) return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" fill="' + fill + '"/>';
+    // rounded top corners only
+    return '<path d="M' + x + ',' + (y + h) +
+      ' L' + x + ',' + (y + r) +
+      ' Q' + x + ',' + y + ' ' + (x + r) + ',' + y +
+      ' L' + (x + w - r) + ',' + y +
+      ' Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + r) +
+      ' L' + (x + w) + ',' + (y + h) + ' Z" fill="' + fill + '"/>';
+  }
+
+  // ---- cumulative-spend sparkline (single-source panel) ----
+  function drawSparklineInto(id, d) {
+    var host = document.getElementById(id);
+    if (!host) return;
+    var W = host.clientWidth || 400, H = 90, pad = 4;
+    var cum = [], run = 0;
+    d.daily.forEach(function (b) { run += b.total; cum.push(run); });
+    var max = cum[cum.length - 1] || 1;
+    var n = cum.length;
+    var pts = cum.map(function (v, i) {
+      var x = pad + (i / (n - 1)) * (W - 2 * pad);
+      var y = (H - pad) - (v / max) * (H - 2 * pad);
+      return [x, y];
+    });
+    var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ');
+    var area = line + ' L' + (W - pad) + ',' + (H - pad) + ' L' + pad + ',' + (H - pad) + ' Z';
+    var svg = '<div class="sub2" style="margin-bottom:6px">Cumulative 30-day spend · <span class="mono" style="color:var(--text)">' + money2(max) + '</span></div>' +
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Cumulative spend sparkline">' +
+      '<defs><linearGradient id="spg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="' + ACCENT + '" stop-opacity="0.35"/><stop offset="100%" stop-color="' + ACCENT + '" stop-opacity="0"/></linearGradient></defs>' +
+      '<path d="' + area + '" fill="url(#spg)"/>' +
+      '<path d="' + line + '" fill="none" stroke="' + ACCENT + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '</svg>';
+    host.innerHTML = svg;
+  }
+
+  // ---- horizontal bars ----
+  function modelRows(d) {
+    return Object.keys(d.byModel).sort(function (a, b) { return d.byModel[b].cost - d.byModel[a].cost; })
+      .map(function (m) { return { name: m, cost: d.byModel[m].cost, tokens: d.byModel[m].tokens, messages: d.byModel[m].messages, color: colorFor(modelColor, m) }; });
+  }
+  function sourceRows(d) {
+    return Object.keys(d.bySource).sort(function (a, b) { return d.bySource[b].cost - d.bySource[a].cost; })
+      .map(function (s) { return { name: s, cost: d.bySource[s].cost, tokens: d.bySource[s].tokens, messages: d.bySource[s].messages, color: colorFor(sourceColor, s) }; });
+  }
+  function drawHBars(id, rows, kind) {
+    var host = document.getElementById(id);
+    if (!host) return;
+    var max = 0; rows.forEach(function (r) { if (r.cost > max) max = r.cost; });
+    if (max <= 0) max = 1;
+    var html = '<div class="hbars">';
+    rows.forEach(function (r) {
+      var w = Math.max(2, (r.cost / max) * 100);
+      html += '<div class="hbar" data-k="' + esc(r.name) + '">' +
+        '<div class="name"><i style="background:' + r.color + '"></i>' + esc(r.name) + '</div>' +
+        '<div class="barwrap"><i style="width:' + w + '%;background:' + r.color + '"></i></div>' +
+        '<div class="val">' + money2(r.cost) + ' <small>· ' + tokens(r.tokens) + '</small></div>' +
+        '</div>';
+    });
+    html += '</div>';
+    host.innerHTML = html;
+    // hover detail
+    Array.prototype.forEach.call(host.querySelectorAll('.hbar'), function (el) {
+      el.addEventListener('mousemove', function (ev) {
+        var name = el.getAttribute('data-k');
+        var r = rows.filter(function (x) { return x.name === name; })[0];
+        if (!r) return;
+        showTip('<div class="t-date">' + esc(r.name) + '</div>' +
+          '<div class="t-row"><span>cost</span><span class="tv">' + money2(r.cost) + '</span></div>' +
+          '<div class="t-row"><span>tokens</span><span class="tv">' + tokens(r.tokens) + '</span></div>' +
+          '<div class="t-row"><span>messages</span><span class="tv">' + num(r.messages) + '</span></div>', ev.clientX, ev.clientY);
+      });
+      el.addEventListener('mouseleave', hideTip);
+    });
+  }
+
+  // ---- sessions table ----
+  function sessionsTable(d) {
+    if (!d.recentSessions.length) return '<div class="sub2">No sessions yet.</div>';
+    var rows = d.recentSessions.map(function (s) {
+      var models = s.models.map(function (m) { return esc(m); }).join(', ');
+      return '<tr>' +
+        '<td class="title">' + esc(s.title) + '</td>' +
+        '<td><span class="badge">' + esc(s.source) + '</span></td>' +
+        '<td style="color:var(--text-3)">' + models + '</td>' +
+        '<td class="num">' + money2(s.cost) + '</td>' +
+        '<td class="num">' + tokens(s.tokens) + '</td>' +
+        '<td class="num">' + num(s.messages) + '</td>' +
+        '<td class="num ago">' + ago(s.lastTs) + '</td>' +
+        '</tr>';
+    }).join('');
+    return '<div style="overflow-x:auto"><table><thead><tr>' +
+      '<th>Session</th><th>Source</th><th>Model(s)</th><th class="num">Cost</th><th class="num">Tokens</th><th class="num">Msgs</th><th class="num">Last</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  // ---- live reset countdown (ticks locally between refreshes) ----
+  var countdownTimer = null;
+  function startCountdown() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    tickCountdown();
+    countdownTimer = setInterval(tickCountdown, 1000);
+  }
+  function tickCountdown() {
+    if (!last || !last.currentBlock) return;
+    var cb = last.currentBlock;
+    var remaining = cb.end - Date.now();
+    var el = document.querySelector('[data-reset]');
+    if (el) el.textContent = dur(remaining);
+    var bar = document.getElementById('resetbar');
+    if (bar) {
+      var frac = 1 - Math.max(0, Math.min(1, remaining / (cb.end - cb.start)));
+      bar.style.width = (frac * 100).toFixed(1) + '%';
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 10000);
+})();
+</script>
+</body>
+</html>
