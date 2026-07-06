@@ -76,7 +76,11 @@
   .chip b { color: var(--accent); font-family: var(--mono); }
 
   /* ---- charts ---- */
-  .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .period-wrap { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .period-sel { font-family: var(--mono); font-size: 12.5px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; cursor: pointer; outline: none; }
+  .period-sel:hover { border-color: var(--accent-dim); }
+  .period-sel:focus { border-color: var(--accent); }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
@@ -161,6 +165,7 @@
   var last = null;         // last payload
   var sourceColor = {};    // source name -> color (stable by entity)
   var modelColor = {};
+  var selectedPeriod = 'last30'; // spend-panel period selection (persists across refreshes)
 
   // ---------- formatters ----------
   function money(v) {
@@ -253,15 +258,17 @@
 
   // ---------- render ----------
   function render(d) {
-    // assign stable colors by entity, in the payload's (sorted) source order
+    // assign stable colors by entity from the all-time lists, so a series keeps
+    // its colour when the period selection changes
     sourceColor = {}; modelColor = {};
-    (d.sources || []).forEach(function (s) { colorFor(sourceColor, s); });
-    Object.keys(d.byModel || {}).sort().forEach(function (m) { colorFor(modelColor, m); });
+    (d.allSources || []).forEach(function (s) { colorFor(sourceColor, s); });
+    (d.allModels || []).forEach(function (m) { colorFor(modelColor, m); });
 
+    var allSrc = d.allSources || [];
     document.getElementById('updated').textContent = clockTime(d.generatedAt);
     document.getElementById('scope').textContent =
       num(d.totals.messages) + ' msgs · ' + num(d.totals.sessions) + ' sessions · ' +
-      (d.singleSource ? 'source: ' + (d.sources[0] || 'cli') : d.sources.length + ' sources');
+      (allSrc.length <= 1 ? 'source: ' + (allSrc[0] || 'cli') : allSrc.length + ' sources');
 
     if (!d.hasData) {
       app.innerHTML = '<div class="empty"><h2>No usage yet</h2>' +
@@ -282,21 +289,39 @@
     html += rollupTile('Last 7 days', d.week);
     html += '</div>';
 
-    // ---- 30-day spend (stacked bars + cumulative sparkline) ----
-    html += '<div class="card" id="c-30d"><div class="chart-head"><h2>30-day spend</h2>' + legendHtml(d) + '</div>' +
-            '<div id="bars30"></div></div>';
+    // ---- spend (period-scoped: Last 30 days, or a specific calendar month) ----
+    var periods = d.periods || [];
+    var period = null;
+    for (var pi = 0; pi < periods.length; pi++) { if (periods[pi].key === selectedPeriod) { period = periods[pi]; break; } }
+    if (!period && periods.length) { period = periods[0]; selectedPeriod = period.key; }
 
-    // ---- model + source bars ----
-    html += '<div class="grid ' + (d.singleSource ? 'cols-2' : 'cols-2') + '">';
-    html += '<div class="card"><h2>By model</h2><div id="byModel"></div></div>';
-    if (d.singleSource) {
-      html += '<div class="card"><h2>By source</h2>' +
-              '<div class="sub2" style="margin-top:2px">Single source — <b style="color:var(--text-2)">' + esc(d.sources[0] || 'cli') + '</b> accounts for 100% of usage.</div>' +
-              '<div id="byModel2" style="margin-top:12px"></div></div>';
-    } else {
-      html += '<div class="card"><h2>By source</h2><div id="bySource"></div></div>';
+    if (period) {
+      var opts = periods.map(function (p) {
+        return '<option value="' + esc(p.key) + '"' + (p.key === selectedPeriod ? ' selected' : '') + '>' +
+          esc(p.label) + ' — ' + money2(p.cost) + '</option>';
+      }).join('');
+      html += '<div class="card"><div class="chart-head"><h2>Spend</h2>' +
+        '<div class="period-wrap"><select id="periodSel" class="period-sel" aria-label="Spend period">' + opts + '</select>' +
+        legendHtml(period) + '</div></div>' +
+        '<div class="sub2" style="margin:-2px 0 12px">' +
+          '<span class="mono" style="color:var(--text);font-size:16px">' + money2(period.cost) + '</span>' +
+          ' · <span class="mono">' + tokens(period.tokens) + '</span> tokens' +
+          ' · <span class="mono">' + num(period.messages) + '</span> msgs' +
+          ' · <span class="mono">' + num(period.sessions) + '</span> sessions' +
+        '</div>' +
+        '<div id="bars30"></div></div>';
+
+      html += '<div class="grid cols-2">';
+      html += '<div class="card"><h2>By model · ' + esc(period.label) + '</h2><div id="byModel"></div></div>';
+      if (period.singleSource) {
+        html += '<div class="card"><h2>By source · ' + esc(period.label) + '</h2>' +
+                '<div class="sub2" style="margin-top:2px">Single source — <b style="color:var(--text-2)">' + esc(period.sources[0] || 'cli') + '</b> accounts for 100% of this period.</div>' +
+                '<div id="byModel2" style="margin-top:12px"></div></div>';
+      } else {
+        html += '<div class="card"><h2>By source · ' + esc(period.label) + '</h2><div id="bySource"></div></div>';
+      }
+      html += '</div>';
     }
-    html += '</div>';
 
     // ---- recent sessions ----
     html += '<div class="card"><h2>Recent sessions</h2>' + sessionsTable(d) + '</div>';
@@ -304,9 +329,13 @@
     app.innerHTML = html;
 
     // draw charts (need DOM present)
-    drawStacked(d);
-    drawHBars('byModel', modelRows(d), 'model');
-    if (d.singleSource) drawSparklineInto('byModel2', d); else drawHBars('bySource', sourceRows(d), 'source');
+    if (period) {
+      drawStacked(period);
+      drawHBars('byModel', modelRows(period), 'model');
+      if (period.singleSource) drawSparklineInto('byModel2', period); else drawHBars('bySource', sourceRows(period), 'source');
+      var sel = document.getElementById('periodSel');
+      if (sel) sel.addEventListener('change', function () { selectedPeriod = this.value; if (last) render(last); });
+    }
 
     startCountdown();
   }
@@ -346,18 +375,18 @@
   }
 
   // ---- legend ----
-  function legendHtml(d) {
-    if (d.singleSource) return '<div class="legend"><span><i style="background:' + ACCENT + '"></i>' + esc(d.sources[0] || 'cli') + '</span></div>';
+  function legendHtml(period) {
+    if (period.singleSource) return '<div class="legend"><span><i style="background:' + ACCENT + '"></i>' + esc(period.sources[0] || 'cli') + '</span></div>';
     var out = '<div class="legend">';
-    (d.sources || []).forEach(function (s) { out += '<span><i style="background:' + colorFor(sourceColor, s) + '"></i>' + esc(s) + '</span>'; });
+    (period.sources || []).forEach(function (s) { out += '<span><i style="background:' + colorFor(sourceColor, s) + '"></i>' + esc(s) + '</span>'; });
     return out + '</div>';
   }
 
   // ---- stacked bar chart (SVG) ----
-  function drawStacked(d) {
+  function drawStacked(period) {
     var host = document.getElementById('bars30');
     if (!host) return;
-    var days = d.daily;
+    var days = period.daily;
     var W = host.clientWidth || 900, H = 190;
     var padL = 6, padR = 6, padB = 20, padT = 8;
     var innerW = W - padL - padR, innerH = H - padT - padB;
@@ -367,9 +396,9 @@
     var max = 0;
     days.forEach(function (b) { if (b.total > max) max = b.total; });
     if (max <= 0) max = 1;
-    var srcs = d.sources;
+    var srcs = period.sources;
 
-    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Daily spend, last 30 days">';
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Daily spend for ' + esc(period.label) + '">';
     // baseline
     svg += '<g class="axis"><line x1="' + padL + '" y1="' + (padT + innerH) + '" x2="' + (W - padR) + '" y2="' + (padT + innerH) + '"/></g>';
 
@@ -396,7 +425,7 @@
         var segH = (seg.c / max) * innerH;
         var isTop = (k === segs.length - 1);
         var yy = padT + innerH - drawnH - segH;
-        var col = d.singleSource ? ACCENT : colorFor(sourceColor, seg.s);
+        var col = period.singleSource ? ACCENT : colorFor(sourceColor, seg.s);
         var r = isTop ? Math.min(4, bw / 2, segH) : 0;
         svg += rectPath(x, yy, bw, segH, r, col);
         drawnH += segH + (k < segs.length - 1 ? 2 : 0); // 2px surface gap between fills
@@ -424,7 +453,7 @@
         srcs.forEach(function (s) {
           var c = (b.bySource && b.bySource[s]) || 0;
           if (c <= 0) return;
-          var col = d.singleSource ? ACCENT : colorFor(sourceColor, s);
+          var col = period.singleSource ? ACCENT : colorFor(sourceColor, s);
           rows += '<div class="t-row"><span><i style="background:' + col + '"></i>' + esc(s) + '</span><span class="tv">' + money2(c) + '</span></div>';
         });
         if (!rows) rows = '<div class="t-row" style="color:var(--text-3)">no spend</div>';
@@ -450,22 +479,22 @@
   }
 
   // ---- cumulative-spend sparkline (single-source panel) ----
-  function drawSparklineInto(id, d) {
+  function drawSparklineInto(id, period) {
     var host = document.getElementById(id);
     if (!host) return;
     var W = host.clientWidth || 400, H = 90, pad = 4;
     var cum = [], run = 0;
-    d.daily.forEach(function (b) { run += b.total; cum.push(run); });
+    period.daily.forEach(function (b) { run += b.total; cum.push(run); });
     var max = cum[cum.length - 1] || 1;
     var n = cum.length;
     var pts = cum.map(function (v, i) {
-      var x = pad + (i / (n - 1)) * (W - 2 * pad);
+      var x = pad + (n > 1 ? (i / (n - 1)) : 0) * (W - 2 * pad);
       var y = (H - pad) - (v / max) * (H - 2 * pad);
       return [x, y];
     });
     var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ');
     var area = line + ' L' + (W - pad) + ',' + (H - pad) + ' L' + pad + ',' + (H - pad) + ' Z';
-    var svg = '<div class="sub2" style="margin-bottom:6px">Cumulative 30-day spend · <span class="mono" style="color:var(--text)">' + money2(max) + '</span></div>' +
+    var svg = '<div class="sub2" style="margin-bottom:6px">Cumulative spend · ' + esc(period.label) + ' · <span class="mono" style="color:var(--text)">' + money2(max) + '</span></div>' +
       '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Cumulative spend sparkline">' +
       '<defs><linearGradient id="spg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="' + ACCENT + '" stop-opacity="0.35"/><stop offset="100%" stop-color="' + ACCENT + '" stop-opacity="0"/></linearGradient></defs>' +
       '<path d="' + area + '" fill="url(#spg)"/>' +
@@ -475,13 +504,15 @@
   }
 
   // ---- horizontal bars ----
-  function modelRows(d) {
-    return Object.keys(d.byModel).sort(function (a, b) { return d.byModel[b].cost - d.byModel[a].cost; })
-      .map(function (m) { return { name: m, cost: d.byModel[m].cost, tokens: d.byModel[m].tokens, messages: d.byModel[m].messages, color: colorFor(modelColor, m) }; });
+  function modelRows(period) {
+    var bm = period.byModel || {};
+    return Object.keys(bm).sort(function (a, b) { return bm[b].cost - bm[a].cost; })
+      .map(function (m) { return { name: m, cost: bm[m].cost, tokens: bm[m].tokens, messages: bm[m].messages, color: colorFor(modelColor, m) }; });
   }
-  function sourceRows(d) {
-    return Object.keys(d.bySource).sort(function (a, b) { return d.bySource[b].cost - d.bySource[a].cost; })
-      .map(function (s) { return { name: s, cost: d.bySource[s].cost, tokens: d.bySource[s].tokens, messages: d.bySource[s].messages, color: colorFor(sourceColor, s) }; });
+  function sourceRows(period) {
+    var bs = period.bySource || {};
+    return Object.keys(bs).sort(function (a, b) { return bs[b].cost - bs[a].cost; })
+      .map(function (s) { return { name: s, cost: bs[s].cost, tokens: bs[s].tokens, messages: bs[s].messages, color: colorFor(sourceColor, s) }; });
   }
   function drawHBars(id, rows, kind) {
     var host = document.getElementById(id);

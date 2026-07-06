@@ -528,55 +528,36 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
     if (e.ts >= sevenDaysAgo) { week.cost += e.cost; week.tokens += tk; week.messages++; }
   }
 
-  // ---- distinct sources (drives CLI-only / single-source degradation) ----
-  const sourceSet = new Set();
-  for (const e of asc) sourceSet.add(e.source);
-  const sources = Array.from(sourceSet).sort();
-  const singleSource = sources.length <= 1;
-
-  // ---- §4.3 daily spend, 30 days, split by source ----
-  // Bucket window: the 30 local calendar days ending today. We walk calendar
-  // days with setDate (DST-safe) rather than adding 24h in epoch ms, which
-  // would collide/gap a day around a DST transition.
-  const dayIndex = {}; // dateStr -> bucket
-  const daily = [];
-  const cursor = new Date(now);
-  cursor.setHours(0, 0, 0, 0);
-  cursor.setDate(cursor.getDate() - 29); // start 29 days back → 30 days incl. today
-  const firstDayStart = cursor.getTime();
-  for (let i = 0; i < 30; i++) {
-    const ds = localDateStr(cursor.getTime());
-    const bucket = { date: ds, total: 0, tokens: 0, bySource: {} };
-    for (const s of sources) bucket.bySource[s] = 0;
-    dayIndex[ds] = bucket;
-    daily.push(bucket);
-    cursor.setDate(cursor.getDate() + 1); // advance one calendar day (DST-safe)
-  }
-  let thirtyDayTotal = 0, thirtyDayTokens = 0;
+  // ---- distinct sources / models across all time (stable color assignment) ----
+  const allSourcesSet = new Set(), allModelsSet = new Set(), monthKeySet = new Set();
   for (const e of asc) {
-    if (e.ts < firstDayStart) continue;
-    const ds = localDateStr(e.ts);
-    const bucket = dayIndex[ds];
-    if (!bucket) continue; // guard (e.g. future-dated / edge)
-    bucket.total += e.cost;
-    bucket.tokens += tokensOf(e);
-    bucket.bySource[e.source] = (bucket.bySource[e.source] || 0) + e.cost;
-    thirtyDayTotal += e.cost;
-    thirtyDayTokens += tokensOf(e);
+    allSourcesSet.add(e.source);
+    allModelsSet.add(e.model);
+    monthKeySet.add(localDateStr(e.ts).slice(0, 7)); // YYYY-MM
   }
+  const allSources = Array.from(allSourcesSet).sort();
+  const allModels = Array.from(allModelsSet).sort();
 
-  // ---- by model ----
-  const byModel = {};
-  for (const e of asc) {
-    const m = byModel[e.model] || (byModel[e.model] = { cost: 0, tokens: 0, messages: 0 });
-    m.cost += e.cost; m.tokens += tokensOf(e); m.messages++;
+  // ---- §4.3 spend PERIODS: "Last 30 days" + one entry per calendar month ----
+  // Each period carries its own daily buckets (split by source), by-model and
+  // by-source rollups, and totals — so the spend section can be re-scoped to a
+  // rolling window or any past month. Day walks use setDate (DST-safe).
+  const periods = [];
+
+  // Rolling last-30-days.
+  {
+    const days = localDayStartsBack(now, 30);
+    const daySet = new Set(days);
+    const inWin = asc.filter((e) => daySet.has(localDateStr(e.ts)));
+    periods.push(buildPeriod('last30', 'Last 30 days', inWin, days, allSources));
   }
-
-  // ---- by source ----
-  const bySource = {};
-  for (const e of asc) {
-    const s = bySource[e.source] || (bySource[e.source] = { cost: 0, tokens: 0, messages: 0 });
-    s.cost += e.cost; s.tokens += tokensOf(e); s.messages++;
+  // One period per calendar month present in the data (newest first, capped).
+  const months = Array.from(monthKeySet).sort().reverse().slice(0, 24);
+  for (const mk of months) {
+    const [y, m] = mk.split('-').map(Number);
+    const days = monthDayList(y, m - 1);
+    const inMonth = asc.filter((e) => localDateStr(e.ts).slice(0, 7) === mk);
+    periods.push(buildPeriod(mk, monthLabel(y, m), inMonth, days, allSources));
   }
 
   // ---- recent sessions (newest first) ----
@@ -621,12 +602,9 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
     burnRate,
     today,
     week,
-    daily,
-    thirtyDay: { total: thirtyDayTotal, tokens: thirtyDayTokens },
-    byModel,
-    bySource,
-    sources,
-    singleSource,
+    periods,
+    allSources,
+    allModels,
     recentSessions,
     pricing: buildPricingView(now),
     hasData: entries.length > 0,
@@ -634,6 +612,71 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
 
   payload.selfCheck = selfCheck(payload, asc, rawBlocks);
   return payload;
+}
+
+// Build one spend period: daily buckets (split by source) + by-model/by-source
+// rollups + totals, over the given entries and ordered day list.
+function buildPeriod(key, label, entries, dayList, allSources) {
+  const index = {};
+  const daily = [];
+  for (const ds of dayList) {
+    const bucket = { date: ds, total: 0, tokens: 0, bySource: {} };
+    for (const s of allSources) bucket.bySource[s] = 0;
+    index[ds] = bucket;
+    daily.push(bucket);
+  }
+  const byModel = {}, bySource = {}, srcSet = new Set(), sess = new Set();
+  let cost = 0, tokens = 0;
+  for (const e of entries) {
+    const tk = tokensOf(e);
+    const b = index[localDateStr(e.ts)];
+    if (b) {
+      b.total += e.cost;
+      b.tokens += tk;
+      b.bySource[e.source] = (b.bySource[e.source] || 0) + e.cost;
+    }
+    cost += e.cost; tokens += tk; srcSet.add(e.source);
+    const m = byModel[e.model] || (byModel[e.model] = { cost: 0, tokens: 0, messages: 0 });
+    m.cost += e.cost; m.tokens += tk; m.messages++;
+    const s = bySource[e.source] || (bySource[e.source] = { cost: 0, tokens: 0, messages: 0 });
+    s.cost += e.cost; s.tokens += tk; s.messages++;
+    if (e.sessionId) sess.add(e.sessionId);
+  }
+  const sources = Array.from(srcSet).sort();
+  return {
+    key, label, cost, tokens, messages: entries.length, sessions: sess.size,
+    daily, byModel, bySource, sources, singleSource: sources.length <= 1,
+  };
+}
+
+// Ordered list of the last n local calendar dates ending today (oldest first),
+// DST-safe via setDate.
+function localDayStartsBack(now, n) {
+  const out = [];
+  const c = new Date(now);
+  c.setHours(0, 0, 0, 0);
+  c.setDate(c.getDate() - (n - 1));
+  for (let i = 0; i < n; i++) {
+    out.push(localDateStr(c.getTime()));
+    c.setDate(c.getDate() + 1);
+  }
+  return out;
+}
+
+// Ordered list of every local calendar date in a given month (oldest first).
+function monthDayList(year, monthIdx) {
+  const out = [];
+  const c = new Date(year, monthIdx, 1); // local midnight, day 1
+  while (c.getMonth() === monthIdx) {
+    out.push(localDateStr(c.getTime()));
+    c.setDate(c.getDate() + 1);
+  }
+  return out;
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function monthLabel(year, month /* 1-based */) {
+  return (MONTH_NAMES[month - 1] || '?') + ' ' + year;
 }
 
 // A compact view of the active price table, for the UI "estimates" note.
@@ -669,10 +712,12 @@ function selfCheck(payload, asc, rawBlocks) {
   const issues = [];
   const EPS = 1e-6;
 
-  // sum of daily buckets == 30-day total
-  const dailySum = payload.daily.reduce((a, b) => a + b.total, 0);
-  if (Math.abs(dailySum - payload.thirtyDay.total) > 1e-4) {
-    issues.push(`daily buckets sum ${dailySum.toFixed(6)} != 30-day total ${payload.thirtyDay.total.toFixed(6)}`);
+  // For each spend period, the daily buckets must sum to the period total.
+  for (const p of payload.periods) {
+    const dailySum = p.daily.reduce((a, b) => a + b.total, 0);
+    if (Math.abs(dailySum - p.cost) > 1e-4) {
+      issues.push(`period ${p.key}: daily sum ${dailySum.toFixed(6)} != total ${p.cost.toFixed(6)}`);
+    }
   }
 
   // today ⊆ 7-day (cost & messages)
