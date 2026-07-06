@@ -131,8 +131,29 @@ function claudeDir() {
 
 // Hand-rolled recursive walker for *.jsonl files. We deliberately avoid
 // fs.readdir(..., {recursive:true}) because its availability varies across the
-// Node 18.x line. READ-ONLY: only readdirSync + statSync, never a write op.
-function walkJsonl(dir, out) {
+// Node 18.x line. READ-ONLY: only readdirSync/statSync/realpathSync, never a
+// write op.
+//
+// Cycle-safe: symlinks and (on Windows) directory junctions can point back at
+// an ancestor, which would make a naive recursion loop forever. We canonicalize
+// each directory with realpathSync and skip any real path already visited, and
+// cap recursion depth as a backstop. Without this, a single junction cycle in
+// ~/.claude wedges the whole server (the request never returns).
+const WALK_MAX_DEPTH = 40;
+function walkJsonl(dir, out, seen, depth) {
+  if (out === undefined) { out = []; seen = new Set(); depth = 0; }
+  if (depth > WALK_MAX_DEPTH) return out;
+
+  // Canonical path (breaks symlink / junction cycles).
+  let real;
+  try {
+    real = (fs.realpathSync.native || fs.realpathSync)(dir);
+  } catch (_) {
+    real = dir;
+  }
+  if (seen.has(real)) return out; // already walked this directory — cycle
+  seen.add(real);
+
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -152,7 +173,7 @@ function walkJsonl(dir, out) {
       } catch (_) { continue; }
     }
     if (isDir) {
-      walkJsonl(full, out);
+      walkJsonl(full, out, seen, depth + 1);
     } else if (isFile && ent.name.endsWith('.jsonl')) {
       out.push(full);
     }
@@ -321,7 +342,9 @@ function parseFile(filePath) {
 // (globally deduped) entry list plus a merged sessionId->meta map. Logs a
 // one-line "parsed X, skipped Y (cached)" so the mtime cache is observable.
 function parseAll() {
-  const files = walkJsonl(projectsRoot(), []);
+  const walkT0 = Date.now();
+  const files = walkJsonl(projectsRoot());
+  const walkMs = Date.now() - walkT0;
   const liveFiles = new Set(files);
 
   let parsed = 0, skipped = 0;
@@ -364,7 +387,7 @@ function parseAll() {
     }
   }
 
-  console.log(`[pulse] parsed ${parsed} file(s), skipped ${skipped} (cached); ${merged.length} unique usage records`);
+  console.log(`[pulse] walked ${files.length} file(s) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached); ${merged.length} unique usage records`);
   return { entries: merged, sessionMeta };
 }
 
@@ -799,6 +822,7 @@ function startServer(port) {
         const t0 = Date.now();
         const payload = buildSummary();
         payload.buildMs = Date.now() - t0;
+        console.log(`[pulse] /api/summary built in ${payload.buildMs}ms`);
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(payload));
         return;
@@ -854,7 +878,7 @@ function resolvePort(args) {
 // Phase 0 helper: print the observed top-level keys and usage keys from a
 // handful of real records so accessors can be confirmed against real data.
 function inspectSchema() {
-  const files = walkJsonl(projectsRoot(), []);
+  const files = walkJsonl(projectsRoot());
   console.log(`[pulse] --inspect-schema: found ${files.length} .jsonl file(s) under ${projectsRoot()}`);
   const topKeys = {}, msgKeys = {}, usageKeys = {}, entrypoints = {}, models = {};
   let sampled = 0, assistantWithUsage = 0;

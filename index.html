@@ -136,7 +136,7 @@
     </div>
   </header>
 
-  <div id="app"><div class="empty"><h2>Connecting…</h2></div></div>
+  <div id="app"><div class="empty"><h2>Reading your Claude Code history…</h2></div></div>
 
   <footer>
     <div class="disclaimer" id="disclaimer">
@@ -217,13 +217,38 @@
   function hideTip() { tip.style.opacity = '0'; }
 
   // ---------- fetch loop ----------
+  var inFlight = false;   // guard: never stampede a slow server with the 10s timer
+  var firstLoad = true;
+  function showFatal(title, msg) {
+    app.innerHTML = '<div class="empty"><h2>' + title + '</h2><div>' + msg + '</div></div>';
+  }
   function refresh() {
+    if (inFlight) return; // a request is still running (e.g. a slow first parse)
+    inFlight = true;
+    // If the first load is slow (large history), swap the message so it doesn't
+    // look broken — without aborting the request.
+    var slowTimer = setTimeout(function () {
+      if (firstLoad) showFatal('Still reading your history…',
+        'A large <code>~/.claude</code> history can take a moment on the first load. ' +
+        'If this never finishes, check the terminal running <code>node server.js</code> — ' +
+        'it logs how many files it is walking and any error.');
+    }, 15000);
     fetch('/api/summary', { cache: 'no-store' })
-      .then(function (r) { return r.json(); })
-      .then(function (d) { last = d; render(d); })
+      .then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' — ' + t.slice(0, 300)); });
+        return r.json();
+      })
+      .then(function (d) {
+        last = d;
+        try { render(d); }
+        catch (e) { showFatal('Couldn’t render', 'The dashboard hit an error while drawing: ' + esc(String(e && e.message || e))); }
+        firstLoad = false;
+      })
       .catch(function (e) {
-        app.innerHTML = '<div class="empty"><h2>Can’t reach the server</h2><div>' + esc(String(e)) + '</div></div>';
-      });
+        showFatal('Can’t reach the server',
+          'Is <code>node server.js</code> still running? ' + esc(String(e && e.message || e)));
+      })
+      .then(function () { clearTimeout(slowTimer); inFlight = false; });
   }
 
   // ---------- render ----------
