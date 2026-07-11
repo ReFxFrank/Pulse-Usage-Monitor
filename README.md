@@ -68,7 +68,7 @@ If you run Claude Code on a headless VPS, install Pulse as a background service
 with a single command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/refxfrank/claudeusage/claude/pulse-usage-dashboard-g0xxtk/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/refxfrank/claudeusage/main/install.sh | bash
 ```
 
 (or clone the repo and run `./install.sh`). The installer:
@@ -126,6 +126,26 @@ Re-running the installer updates to the latest version and restarts the service.
 - **Degrades cleanly.** If no desktop-app records exist (e.g. a headless VPS running Claude
   Code over `tmux`), Pulse runs in single-source mode and derives session titles from the
   first user prompt. No desktop app is required.
+
+## What Pulse can and can't see
+
+- Pulse reads the session logs on **this machine only** (`~/.claude/projects`).
+  Usage from other computers, the claude.ai website, or the mobile app is not in
+  those logs and won't appear.
+- **Claude Code prunes old logs.** By default it deletes session transcripts
+  after ~30 days (`cleanupPeriodDays`). Once a log is deleted, that usage is
+  gone from Pulse too — past months will slowly shrink. To keep your history,
+  add this to `~/.claude/settings.json`:
+
+  ```json
+  { "cleanupPeriodDays": 3650 }
+  ```
+
+- "Last 30 days" is a **rolling window** — heavy days age out of it daily. Use
+  the month entries in the period dropdown for fixed calendar-month totals.
+- The **Recent sessions** table shows whole-session totals (all of a session's
+  messages, whenever they happened), so summing that column will not match a
+  period total when sessions straddle the window edge.
 
 ## Costs are estimates, not a bill
 
