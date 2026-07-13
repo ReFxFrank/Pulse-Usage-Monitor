@@ -13,6 +13,7 @@
     "start": "node server.js",
     "build": "npm --prefix web install && npm --prefix web run build",
     "dev": "npm --prefix web run dev",
+    "make-exe": "node build/make-exe.mjs",
     "inspect-schema": "node server.js --inspect-schema"
   },
   "keywords": [

@@ -1,0 +1,73 @@
+name: Release
+
+# Push a version tag to build single-file executables and publish a GitHub
+# Release with them attached:
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: pulse.exe
+          - os: ubuntu-latest
+            artifact: pulse-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build frontend
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+
+      - name: Build single-file executable (SEA)
+        run: node build/make-exe.mjs
+
+      - name: Smoke test
+        shell: bash
+        run: ./dist-exe/${{ matrix.artifact }} --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist-exe/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/pulse.exe
+            dist/pulse-linux
+          generate_release_notes: true
+          body: |
+            **Pulse** — a local Claude Code usage dashboard.
+
+            ### Download
+            - **Windows:** `pulse.exe` — double-click it; the dashboard opens at http://localhost:4747.
+              Windows SmartScreen may warn because the binary is unsigned: click **More info → Run anyway**.
+            - **Linux:** `pulse-linux` — `chmod +x pulse-linux && ./pulse-linux`
+
+            Everything runs locally: Pulse reads `~/.claude` read-only and makes no network calls.
+            Optional reasoning-effort logging: run `pulse.exe --effort-setup` and follow the printed steps.

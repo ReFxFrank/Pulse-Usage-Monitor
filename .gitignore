@@ -1,5 +1,10 @@
-# Runtime / install artifacts — Pulse itself has no build step and no deps.
+# Runtime / install artifacts
 pulse.log
 node_modules/
 npm-debug.log*
 .DS_Store
+
+# single-executable build outputs
+dist-exe/
+build/sea-prep.blob
+build/sea-config.json

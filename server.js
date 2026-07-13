@@ -314,6 +314,7 @@ function parseFile(filePath) {
   const entries = [];
   const seen = new Set();       // per-file dedup
   const sessionMeta = {};       // sessionId -> { firstUserText, project }
+  const ultracodeSessions = []; // sessions whose prompts invoked ultracode
 
   for (const line of lines) {
     if (!line) continue;
@@ -325,15 +326,19 @@ function parseFile(filePath) {
     }
     if (!rec || typeof rec !== 'object') continue;
 
-    // Capture first user prompt per session for the title fallback.
+    // Capture first user prompt per session for the title fallback, and flag
+    // ultracode sessions (the keyword in a prompt opts the session in — this
+    // works retroactively, even before the mode hook is installed).
     if (rec.type === 'user') {
       const sid = rec.sessionId || '';
+      const txt = userText(rec);
       if (sid && !sessionMeta[sid]) {
         sessionMeta[sid] = {
-          firstUserText: userText(rec).trim(),
+          firstUserText: txt.trim(),
           project: rec.cwd || '',
         };
       }
+      if (sid && /\bultracode\b/i.test(txt)) ultracodeSessions.push(sid);
       continue;
     }
 
@@ -351,7 +356,7 @@ function parseFile(filePath) {
       sessionMeta[e.sessionId].project = e.project;
     }
   }
-  return { entries, sessionMeta };
+  return { entries, sessionMeta, ultracodeSessions };
 }
 
 // Walk all files; reuse cached parse when mtime is unchanged. Returns the merged
@@ -379,7 +384,12 @@ function parseAll() {
       failed++;
       continue;
     }
-    fileCache.set(f, { mtimeMs: st.mtimeMs, entries: result.entries, sessionMeta: result.sessionMeta });
+    fileCache.set(f, {
+      mtimeMs: st.mtimeMs,
+      entries: result.entries,
+      sessionMeta: result.sessionMeta,
+      ultracodeSessions: result.ultracodeSessions || [],
+    });
     parsed++;
   }
   // Drop cache entries for files that have disappeared.
@@ -391,12 +401,14 @@ function parseAll() {
   const merged = [];
   const globalSeen = new Set();
   const sessionMeta = {};
-  for (const { entries, sessionMeta: sm } of fileCache.values()) {
+  const ultracodeSessions = new Set();
+  for (const { entries, sessionMeta: sm, ultracodeSessions: us } of fileCache.values()) {
     for (const e of entries) {
       if (globalSeen.has(e.key)) continue;
       globalSeen.add(e.key);
       merged.push(e);
     }
+    for (const sid of us || []) ultracodeSessions.add(sid);
     for (const sid of Object.keys(sm)) {
       const cur = sessionMeta[sid];
       const inc = sm[sid];
@@ -410,7 +422,68 @@ function parseAll() {
   }
 
   console.log(`[pulse] walked ${files.length} file(s) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
-  return { entries: merged, sessionMeta, fileCount: files.length };
+  return { entries: merged, sessionMeta, ultracodeSessions, fileCount: files.length };
+}
+
+// ---------------------------------------------------------------------------
+// EFFORT / MODE SIDECAR LOG
+//
+// Claude Code never writes the reasoning effort level (low/medium/high/xhigh/
+// max, or ultracode) into transcripts, but it DOES deliver it to hooks. The
+// optional hook shipped at hooks/pulse-mode-hook.js (see --effort-setup)
+// records it to a sidecar log — one JSONL line per change:
+//   { ts, sessionId, event, effort, ultracode?, model? }
+// Pulse reads that log and joins effort onto entries by sessionId + timestamp
+// (latest mode record at or before the entry). Cached by mtime like the
+// transcript files. Location is outside ~/.claude on purpose.
+// ---------------------------------------------------------------------------
+
+function modesFilePath() {
+  return process.env.PULSE_MODES_FILE || path.join(os.homedir(), '.pulse', 'modes.jsonl');
+}
+
+let modesCache = { mtimeMs: -1, bySession: {} };
+function readModes() {
+  const f = modesFilePath();
+  let st;
+  try { st = fs.statSync(f); } catch (_) { return {}; } // no log — hook not installed
+  if (st.mtimeMs === modesCache.mtimeMs) return modesCache.bySession;
+  const bySession = {};
+  let raw;
+  try { raw = fs.readFileSync(f, 'utf8'); } catch (_) { return modesCache.bySession; }
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    let r;
+    try { r = JSON.parse(line); } catch (_) { continue; }
+    if (!r || !r.sessionId) continue;
+    const ts = typeof r.ts === 'number' && isFinite(r.ts) ? r.ts : 0;
+    (bySession[r.sessionId] = bySession[r.sessionId] || [])
+      .push({ ts, effort: r.effort ? String(r.effort) : null, ultracode: !!r.ultracode });
+  }
+  for (const k of Object.keys(bySession)) bySession[k].sort((a, b) => a.ts - b.ts);
+  modesCache = { mtimeMs: st.mtimeMs, bySession };
+  return bySession;
+}
+
+// Annotate entries in place with { effort, ultracode } from the sidecar log
+// (time-joined per session) plus transcript-detected ultracode sessions.
+function annotateModes(entriesAsc, modesBySession, ultracodeSessions) {
+  for (const e of entriesAsc) {
+    let effort = null;
+    let ultra = ultracodeSessions.has(e.sessionId);
+    const recs = modesBySession[e.sessionId];
+    if (recs && recs.length) {
+      // latest record at or before this entry; else the session's first record
+      let chosen = recs[0];
+      for (const r of recs) {
+        if (r.ts <= e.ts) chosen = r; else break;
+      }
+      effort = chosen.effort;
+      if (recs.some((r) => r.ultracode && r.ts <= e.ts + HOUR_MS)) ultra = true;
+    }
+    e.effort = effort;
+    e.ultracode = ultra;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -479,8 +552,10 @@ function startOfLocalDay(ts) {
   return d.getTime();
 }
 
-function aggregate(entries, sessionMeta, desktopTitles, now) {
+function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ultracodeSessions) {
   const asc = entries.slice().sort((a, b) => a.ts - b.ts);
+  annotateModes(asc, modesBySession || {}, ultracodeSessions || new Set());
+  const modesLogged = Object.keys(modesBySession || {}).length > 0;
 
   // ---- 5-hour blocks + active block ----
   const rawBlocks = computeBlocks(asc);
@@ -590,11 +665,14 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
     if (!s) {
       s = sessMap[sid] = {
         sessionId: sid, cost: 0, tokens: 0, messages: 0,
-        models: new Set(), sources: new Set(), speeds: new Set(), lastTs: 0, firstTs: e.ts,
+        models: new Set(), sources: new Set(), speeds: new Set(), efforts: new Set(),
+        ultracode: false, lastTs: 0, firstTs: e.ts,
       };
     }
     s.cost += e.cost; s.tokens += tokensOf(e); s.messages++;
     s.models.add(e.model); s.sources.add(e.source); s.speeds.add(e.speed);
+    if (e.effort) s.efforts.add(e.effort);
+    if (e.ultracode) s.ultracode = true;
     if (e.ts > s.lastTs) s.lastTs = e.ts;
   }
   const recentSessions = Object.values(sessMap)
@@ -606,6 +684,8 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
       source: s.sources.size === 1 ? Array.from(s.sources)[0] : 'mixed',
       models: Array.from(s.models),
       speeds: Array.from(s.speeds).sort(),
+      efforts: Array.from(s.efforts).sort(),
+      ultracode: s.ultracode,
       cost: s.cost,
       tokens: s.tokens,
       messages: s.messages,
@@ -632,6 +712,9 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
     recentSessions,
     pricing: buildPricingView(now),
     hasData: entries.length > 0,
+    // effort/mode sidecar status — lets the UI hint at setup when absent
+    modesLogged,
+    modesFile: modesFilePath(),
   };
 
   payload.selfCheck = selfCheck(payload, asc, rawBlocks);
@@ -664,6 +747,8 @@ function buildPeriod(key, label, entries, dayList, allSources) {
     m.cost += e.cost; m.tokens += tk; m.messages++;
     m.speeds[e.speed] = (m.speeds[e.speed] || 0) + 1;
     m.tiers[e.serviceTier] = (m.tiers[e.serviceTier] || 0) + 1;
+    if (e.effort) m.efforts = m.efforts || {}, m.efforts[e.effort] = (m.efforts[e.effort] || 0) + 1;
+    if (e.ultracode) m.ultracode = (m.ultracode || 0) + 1;
     const s = bySource[e.source] || (bySource[e.source] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
     s.cost += e.cost; s.tokens += tk; s.messages++;
     s.speeds[e.speed] = (s.speeds[e.speed] || 0) + 1;
@@ -864,15 +949,33 @@ function collectTitles(obj, fileName, map) {
 // ---------------------------------------------------------------------------
 
 function buildSummary() {
-  const { entries, sessionMeta, fileCount } = parseAll();
+  const { entries, sessionMeta, ultracodeSessions, fileCount } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
-  const payload = aggregate(entries, sessionMeta, desktopTitles, now);
+  const payload = aggregate(entries, sessionMeta, desktopTitles, now, readModes(), ultracodeSessions);
   // Surface what Pulse is actually reading, so a wrong-directory setup (e.g.
   // Claude Code under WSL while Pulse runs in native Windows) is diagnosable.
   payload.claudeDir = claudeDir();
   payload.fileCount = fileCount;
   return payload;
+}
+
+// ---------------------------------------------------------------------------
+// SINGLE-EXECUTABLE (SEA) SUPPORT
+// When packaged as pulse.exe / pulse-linux (see build/make-exe.mjs), the
+// frontend is embedded as SEA assets keyed "web/dist/<relpath>" and read via
+// node:sea instead of the filesystem. In a normal checkout seaApi is null and
+// everything reads from disk as before.
+// ---------------------------------------------------------------------------
+let seaApi = null;
+try {
+  const sea = require('node:sea');
+  if (sea.isSea && sea.isSea()) seaApi = sea;
+} catch (_) { /* Node 18 has no node:sea — repo mode only */ }
+
+function seaAsset(key) {
+  if (!seaApi) return null;
+  try { return Buffer.from(seaApi.getRawAsset(key)); } catch (_) { return null; }
 }
 
 // The built React frontend (Vite output). Served as static files; the server
@@ -901,11 +1004,26 @@ const CONTENT_TYPES = {
 // non-asset routes fall back to index.html (SPA). Returns false only when the
 // frontend build is missing entirely.
 function serveStatic(route, res) {
-  const indexFile = path.join(WEB_DIR, 'index.html');
-  if (!fs.existsSync(indexFile)) return false; // not built
-
   let rel = decodeURIComponent(route);
   if (rel === '/' || rel === '') rel = '/index.html';
+
+  // Packaged binary: serve from embedded SEA assets.
+  if (seaApi) {
+    let target = rel;
+    let buf = seaAsset('web/dist' + rel);
+    if (!buf) { target = '/index.html'; buf = seaAsset('web/dist/index.html'); } // SPA fallback
+    if (!buf) return false;
+    const ext = path.extname(target).toLowerCase();
+    res.writeHead(200, {
+      'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream',
+      'Cache-Control': target === '/index.html' ? 'no-store' : 'public, max-age=31536000, immutable',
+    });
+    res.end(buf);
+    return true;
+  }
+
+  const indexFile = path.join(WEB_DIR, 'index.html');
+  if (!fs.existsSync(indexFile)) return false; // not built
   // Resolve within WEB_DIR and reject anything that escapes it.
   const resolved = path.normalize(path.join(WEB_DIR, rel));
   let target = resolved;
@@ -923,7 +1041,7 @@ function serveStatic(route, res) {
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
-function startServer(port, host) {
+function startServer(port, host, opts) {
   const server = http.createServer((req, res) => {
     const parsed = url.parse(req.url);
     const route = parsed.pathname;
@@ -970,6 +1088,12 @@ function startServer(port, host) {
     console.log(`\n  Pulse — Claude Code usage dashboard`);
     console.log(`  reading (read-only): ${claudeDir()}`);
     console.log(`  listening: http://${host}:${port}`);
+    // Packaged exe double-clicked on Windows: open the dashboard for the user.
+    if (seaApi && process.platform === 'win32' && (!opts || opts.open !== false) && LOOPBACK_HOSTS.has(host)) {
+      try {
+        require('child_process').exec(`start "" "http://localhost:${port}"`);
+      } catch (_) {}
+    }
     if (LOOPBACK_HOSTS.has(host)) {
       console.log(`  open: http://localhost:${port}\n`);
     } else {
@@ -987,8 +1111,101 @@ function startServer(port, host) {
 // CONFIG + CLI ENTRY
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// EFFORT / MODE HOOK  (`--mode-hook`)
+//
+// Claude Code delivers the live reasoning effort level to hooks (stdin JSON
+// `effort: {level}`) but never writes it to transcripts. Registered as a
+// SessionStart + UserPromptSubmit hook (see --effort-setup), this subcommand
+// appends effort changes to the sidecar log that readModes() joins in.
+// It must never disturb a session: always exits 0, prints nothing, swallows
+// every error. Writes ONLY to ~/.pulse — never under ~/.claude.
+// ---------------------------------------------------------------------------
+function runModeHook() {
+  try {
+    let raw = '';
+    try { raw = fs.readFileSync(0, 'utf8'); } catch (_) {}
+    let p = {};
+    try { p = raw.trim() ? JSON.parse(raw) : {}; } catch (_) {}
+
+    const sessionId = p.session_id || '';
+    if (!sessionId) return;
+
+    // Structured hook field first; env fallbacks. Recorded verbatim so any
+    // future level name is preserved.
+    let effort = null;
+    if (p.effort && typeof p.effort === 'object' && p.effort.level) effort = String(p.effort.level);
+    else if (typeof p.effort === 'string') effort = p.effort;
+    else if (process.env.CLAUDE_EFFORT) effort = String(process.env.CLAUDE_EFFORT);
+    else if (process.env.CLAUDE_CODE_EFFORT_LEVEL) effort = String(process.env.CLAUDE_CODE_EFFORT_LEVEL);
+
+    const prompt = typeof p.prompt === 'string' ? p.prompt : '';
+    const ultracode = /\bultracode\b/i.test(prompt) || /^ultracode$/i.test(effort || '');
+    if (!effort && !ultracode) return;
+
+    const rec = { ts: Date.now(), sessionId, event: p.hook_event_name || '', effort: effort || null };
+    if (ultracode) rec.ultracode = true;
+    if (p.model) rec.model = String(p.model);
+
+    const file = modesFilePath();
+    try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch (_) {}
+
+    // Append only when something changed for this session (hooks fire every
+    // prompt; the log should only grow on change).
+    try {
+      const st = fs.statSync(file);
+      if (st.size > 0 && st.size < 10 * 1024 * 1024) {
+        const tail = fs.readFileSync(file, 'utf8').trimEnd().split('\n');
+        for (let i = tail.length - 1; i >= 0 && i >= tail.length - 200; i--) {
+          let last;
+          try { last = JSON.parse(tail[i]); } catch (_) { continue; }
+          if (last.sessionId !== sessionId) continue;
+          if (last.effort === rec.effort && !!last.ultracode === !!rec.ultracode) return;
+          break;
+        }
+      }
+    } catch (_) {}
+
+    fs.appendFileSync(file, JSON.stringify(rec) + '\n');
+  } catch (_) {}
+}
+
+// `--effort-setup` — print (never write) the settings.json snippet that
+// enables effort logging. Pulse never modifies ~/.claude itself.
+function effortSetup() {
+  const cmdValue = seaApi
+    ? `${q(process.execPath)} --mode-hook`
+    : `${q(process.execPath)} ${q(__filename)} --mode-hook`;
+  const hookEntry = [{ hooks: [{ type: 'command', command: cmdValue }] }];
+  const snippet = { hooks: { SessionStart: hookEntry, UserPromptSubmit: hookEntry } };
+
+  const settingsPath = path.join(claudeDir(), 'settings.json');
+  console.log('\nPulse — effort logging setup');
+  console.log('─'.repeat(64));
+  console.log('Claude Code sends the reasoning effort level (high/xhigh/max,');
+  console.log('ultracode) to hooks but never writes it to transcripts. Add the');
+  console.log('hooks below and Pulse will record + display effort per session.');
+  console.log('');
+  console.log(`1. Open:  ${settingsPath}`);
+  console.log('   (create it if missing; if a "hooks" section exists, merge the');
+  console.log('   two entries into it instead of replacing it)');
+  console.log('');
+  console.log('2. Add:');
+  console.log(JSON.stringify(snippet, null, 2));
+  console.log('');
+  console.log('3. Restart your Claude Code sessions. New sessions log their');
+  console.log(`   effort level to ${modesFilePath()}`);
+  console.log('   and Pulse picks it up automatically (nothing is ever written');
+  console.log('   under ~/.claude by Pulse).');
+  console.log('');
+}
+
+function q(s) {
+  return /[\s"]/.test(s) ? '"' + s.replace(/"/g, '\\"') + '"' : s;
+}
+
 function parseArgs(argv) {
-  const out = { port: null, host: null, inspectSchema: false };
+  const out = { port: null, host: null, inspectSchema: false, modeHook: false, effortSetup: false, noOpen: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' || a === '-p') { out.port = parseInt(argv[++i], 10); }
@@ -996,6 +1213,9 @@ function parseArgs(argv) {
     else if (a === '--host') { out.host = argv[++i]; }
     else if (a.startsWith('--host=')) { out.host = a.slice(7); }
     else if (a === '--inspect-schema') { out.inspectSchema = true; }
+    else if (a === '--mode-hook') { out.modeHook = true; }
+    else if (a === '--effort-setup') { out.effortSetup = true; }
+    else if (a === '--no-open') { out.noOpen = true; }
     else if (a === '--help' || a === '-h') { out.help = true; }
   }
   return out;
@@ -1065,12 +1285,19 @@ function main() {
     console.log('  --host H          bind address (default 127.0.0.1, or $HOST).');
     console.log('                    Use 0.0.0.0 to expose on the network — see the');
     console.log('                    warning it prints; prefer an SSH tunnel instead.');
+    console.log('  --effort-setup    print the Claude Code hooks snippet that enables');
+    console.log('                    reasoning-effort logging (Pulse never edits ~/.claude)');
+    console.log('  --mode-hook       (internal) run as a Claude Code hook — records the');
+    console.log('                    effort level to ' + modesFilePath());
+    console.log('  --no-open         do not auto-open the browser (packaged exe only)');
     console.log('  --inspect-schema  print observed record schema and exit');
     console.log('  env CLAUDE_DIR    override ~/.claude location');
     return;
   }
+  if (args.modeHook) { runModeHook(); return; }
+  if (args.effortSetup) { effortSetup(); return; }
   if (args.inspectSchema) { inspectSchema(); return; }
-  startServer(resolvePort(args), resolveHost(args));
+  startServer(resolvePort(args), resolveHost(args), { open: !args.noOpen });
 }
 
 if (require.main === module) main();

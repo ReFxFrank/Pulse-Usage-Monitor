@@ -152,7 +152,7 @@ export function Rollup({ label, r, delay }) {
   );
 }
 
-// speed/mode chips — the only runtime execution mode Claude Code records.
+// speed chips — execution speed (fast vs standard) recorded in transcripts.
 // `speeds` is a { speedName: count } map, or an array of names.
 export function SpeedBadges({ speeds, align = 'flex-end' }) {
   let entries;
@@ -163,6 +163,27 @@ export function SpeedBadges({ speeds, align = 'flex-end' }) {
     <span className="spd" style={{ justifyContent: align }}>
       {entries.map(([sp]) => (
         <span key={sp} className={'spdb' + (sp !== 'standard' ? ' hot' : '')}>{sp}</span>
+      ))}
+    </span>
+  );
+}
+
+// effort chips — reasoning effort captured by Pulse's optional hook logging
+// (node server.js --effort-setup). `efforts` is a {level: count} map or an
+// array of level names; `ultracode` adds the ULTRA chip.
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+export function EffortBadges({ efforts, ultracode, align = 'flex-end' }) {
+  let names;
+  if (Array.isArray(efforts)) names = efforts.slice();
+  else names = Object.keys(efforts || {});
+  names = names.filter((n) => n && n !== 'ultracode');
+  names.sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
+  if (!names.length && !ultracode) return null;
+  return (
+    <span className="spd" style={{ justifyContent: align }}>
+      {ultracode && <span className="spdb ultra">ultra</span>}
+      {names.map((n) => (
+        <span key={n} className={'spdb e-' + n}>{n}</span>
       ))}
     </span>
   );
@@ -188,12 +209,23 @@ export function BarList({ rows }) {
               />
             </div>
             <div className="v">{money2(r.cost)} <small>· {tokens(r.tokens)}</small></div>
-            <SpeedBadges speeds={r.speeds} />
+            <span className="spd" style={{ justifyContent: 'flex-end' }}>
+              <EffortBadges efforts={r.efforts} ultracode={!!r.ultracode} align="flex-end" />
+              <SpeedBadges speeds={onlyNonStandard(r.speeds)} />
+            </span>
           </div>
         </InfoTip>
       ))}
     </div>
   );
+}
+
+// with effort chips present, a "standard" speed chip on every row is noise —
+// keep speed chips for the interesting case (fast) only
+function onlyNonStandard(speeds) {
+  const out = {};
+  for (const [k, v] of Object.entries(speeds || {})) if (k !== 'standard') out[k] = v;
+  return out;
 }
 
 export function SessionsTable({ sessions }) {
@@ -203,7 +235,7 @@ export function SessionsTable({ sessions }) {
       <table>
         <thead>
           <tr>
-            <th>Session</th><th>Source</th><th>Speed</th><th>Model(s)</th>
+            <th>Session</th><th>Source</th><th>Mode</th><th>Model(s)</th>
             <th className="n">Cost</th><th className="n">Tokens</th><th className="n">Msgs</th><th className="n">Last</th>
           </tr>
         </thead>
@@ -212,7 +244,15 @@ export function SessionsTable({ sessions }) {
             <tr key={s.sessionId}>
               <td className="title">{s.title}</td>
               <td><span className="badge">{s.source}</span></td>
-              <td><SpeedBadges speeds={s.speeds} align="flex-start" /></td>
+              <td>
+                <span className="spd" style={{ justifyContent: 'flex-start' }}>
+                  <EffortBadges efforts={s.efforts} ultracode={!!s.ultracode} align="flex-start" />
+                  <SpeedBadges speeds={(s.speeds || []).filter((x) => x !== 'standard')} align="flex-start" />
+                  {!(s.efforts && s.efforts.length) && !s.ultracode && !(s.speeds || []).some((x) => x !== 'standard') && (
+                    <span style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 11 }}>—</span>
+                  )}
+                </span>
+              </td>
               <td style={{ color: 'var(--text-3)' }}>{s.models.join(', ')}</td>
               <td className="n">{money2(s.cost)}</td>
               <td className="n">{tokens(s.tokens)}</td>

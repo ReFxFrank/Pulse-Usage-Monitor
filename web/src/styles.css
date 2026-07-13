@@ -147,6 +147,17 @@ svg { display: block; }
 .spd { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 .spdb { font-family: var(--mono); font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 6px; background: rgba(255, 255, 255, 0.05); color: var(--text-3); border: 1px solid var(--stroke); white-space: nowrap; }
 .spdb.hot { color: var(--accent-3); background: rgba(155, 140, 255, 0.15); border-color: rgba(155, 140, 255, 0.32); }
+
+/* effort levels — intensity rises with the level */
+.spdb.e-low    { color: var(--text-3); }
+.spdb.e-medium { color: var(--text-2); }
+.spdb.e-high   { color: #7fb3f7; background: rgba(74, 155, 245, 0.10); border-color: rgba(74, 155, 245, 0.28); }
+.spdb.e-xhigh  { color: var(--accent-3); background: rgba(155, 140, 255, 0.14); border-color: rgba(155, 140, 255, 0.34); }
+.spdb.e-max    { color: #edc078; background: rgba(224, 161, 50, 0.12); border-color: rgba(224, 161, 50, 0.35); }
+.spdb.ultra {
+  color: #fff; border: none; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  background: linear-gradient(120deg, #8f7ff5, #d55fa2 55%, #e0a132);
+}
 .hbar .nm { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
 .hbar .nm i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
 .hbar .track { background: rgba(255, 255, 255, 0.05); border-radius: 6px; height: 18px; overflow: hidden; }

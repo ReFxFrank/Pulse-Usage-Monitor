@@ -26,11 +26,21 @@ moves, or deletes anything there.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Requirements
+## Download (easiest)
 
-- **Node ≥ 18** (built-ins only — `fs`, `http`, `path`, `os`, `url`). No build step.
+Grab the latest single-file executable from
+**[Releases](https://github.com/refxfrank/claudeusage/releases)** — no Node, no
+install:
 
-## Run
+- **Windows:** download `pulse.exe` and double-click it — the dashboard opens at
+  `http://localhost:4747`. SmartScreen may warn because the binary is unsigned:
+  click **More info → Run anyway**.
+- **Linux:** `chmod +x pulse-linux && ./pulse-linux`
+
+## Run from source
+
+- **Node ≥ 18** for the server (zero runtime dependencies). The pre-built
+  frontend is committed, so this is all you need:
 
 ```sh
 node server.js
@@ -43,6 +53,11 @@ or
 npm start          # same thing
 ./pulse.sh         # POSIX launcher (pulse.cmd on Windows)
 ```
+
+To hack on the React frontend (`web/`): `npm run build` (Node ≥ 20) rebuilds it;
+`npm run dev` runs Vite with hot reload. To produce a single-file executable
+yourself: `node build/make-exe.mjs` (builds for the OS you run it on; the
+release workflow does this on tag push).
 
 The dashboard fetches fresh data and re-renders **every 10 seconds** — leave it open
 in a tab while you work.
@@ -127,6 +142,23 @@ Re-running the installer updates to the latest version and restarts the service.
   Code over `tmux`), Pulse runs in single-source mode and derives session titles from the
   first user prompt. No desktop app is required.
 
+## Reasoning-effort logging (optional)
+
+Claude Code never writes the reasoning effort level (`low`→`max`, ultracode) to
+its transcripts — but it does hand it to hooks. Pulse ships an optional hook
+that records it so the dashboard can show effort chips per model and session:
+
+```sh
+node server.js --effort-setup     # or: pulse.exe --effort-setup
+```
+
+That prints a `hooks` snippet to paste into `~/.claude/settings.json` (Pulse
+never edits `~/.claude` itself). Once added, new sessions log their effort level
+to `~/.pulse/modes.jsonl` and the dashboard picks it up automatically. The hook
+is silent, always exits 0, and appends only when the level changes. Ultracode
+sessions are additionally detected from prompt text, which works even for
+history recorded before the hook was installed.
+
 ## What Pulse can and can't see
 
 - Pulse reads the session logs on **this machine only** (`~/.claude/projects`).
@@ -167,7 +199,9 @@ you will be charged. Verify current list prices at
 | File          | What it is                                                             |
 | ------------- | ---------------------------------------------------------------------- |
 | `server.js`   | Zero-dependency backend: parsing, mtime cache, aggregation, HTTP.      |
-| `index.html`  | Self-contained dashboard — HTML + inline CSS + vanilla JS + SVG charts.|
+| `web/`        | React frontend (Vite + Radix + Framer Motion); built output in `web/dist` is committed and served by the server. |
+| `build/make-exe.mjs` | Packages server + frontend into a single executable (Node SEA). |
+| `.github/workflows/release.yml` | Builds `pulse.exe` / `pulse-linux` and publishes a Release on `v*` tags. |
 | `pulse.sh`    | POSIX launcher (`pulse.cmd` for Windows).                              |
 | `install.sh`  | One-command Ubuntu/systemd VPS installer (service + boot + tunnel help).|
 | `package.json`| Metadata + `npm start`. Declares **no** dependencies.                  |

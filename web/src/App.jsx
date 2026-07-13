@@ -120,7 +120,13 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey }) {
             <Card delay={0.24}>
               <h2 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 By model · {period.label}
-                <InfoTip text="Chips show execution speed — fast vs standard — the only runtime mode Claude Code writes to the logs. Reasoning effort (high / xhigh / max) and ultracode are request-time settings that are not recorded, so they can’t be shown.">
+                <InfoTip
+                  text={
+                    data.modesLogged
+                      ? 'Chips show the reasoning effort (low → max, plus ultracode) recorded by Pulse’s Claude Code hook, and execution speed when fast mode was used.'
+                      : 'Effort levels (high / xhigh / max, ultracode) aren’t written to Claude Code’s transcripts — enable Pulse’s effort logging with:  node server.js --effort-setup  (or pulse.exe --effort-setup). Ultracode sessions are still detected from prompt text.'
+                  }
+                >
                   <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
                 </InfoTip>
               </h2>
