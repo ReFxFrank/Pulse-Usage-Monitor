@@ -251,6 +251,26 @@ function userText(rec) {
   return '';
 }
 
+// Reasoning-effort level names Claude Code accepts for `/effort` (ultracode is
+// handled separately — it is xhigh plus workflow orchestration, shown as ULTRA).
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+// Detect a local-command user record (`/effort`, `/model`, …). Claude Code
+// writes these into the transcript as XML-ish tags:
+//   <command-name>/effort</command-name> ... <command-args>max</command-args>
+// and echoes their output in a follow-up <local-command-stdout> record.
+// Returns { name, args } for a command record, { name: '', args: '' } for a
+// stdout echo, or null for a real prompt.
+function parseLocalCommand(txt) {
+  const m = /<command-name>\s*(\/[\w:.-]+)\s*<\/command-name>/.exec(txt);
+  if (m) {
+    const a = /<command-args>([\s\S]*?)<\/command-args>/.exec(txt);
+    return { name: m[1], args: a ? a[1].trim() : '' };
+  }
+  if (txt.indexOf('<local-command-stdout>') !== -1) return { name: '', args: '' };
+  return null;
+}
+
 // Turn one assistant-with-usage record into a normalized Entry, or null if the
 // record carries no usage.
 function normalize(rec) {
@@ -332,6 +352,7 @@ function parseFile(filePath) {
   const seen = new Set();       // per-file dedup
   const sessionMeta = {};       // sessionId -> { firstUserText, project }
   const ultracodeSessions = []; // sessions whose prompts invoked ultracode
+  const effortEvents = [];      // time-stamped /effort changes parsed from the transcript
 
   for (const line of lines) {
     if (!line) continue;
@@ -343,19 +364,38 @@ function parseFile(filePath) {
     }
     if (!rec || typeof rec !== 'object') continue;
 
-    // Capture first user prompt per session for the title fallback, and flag
-    // ultracode sessions (the keyword in a prompt opts the session in — this
-    // works retroactively, even before the mode hook is installed).
+    // Each user record is either a real prompt or a local-command invocation
+    // (`/effort`, `/model`, …, plus their <local-command-stdout> echoes).
     if (rec.type === 'user') {
       const sid = rec.sessionId || '';
       const txt = userText(rec);
-      if (sid && !sessionMeta[sid]) {
+      const cmd = parseLocalCommand(txt);
+      // First real prompt per session → title fallback (commands make bad titles).
+      if (sid && !cmd && !sessionMeta[sid]) {
         sessionMeta[sid] = {
           firstUserText: txt.trim(),
           project: rec.cwd || '',
         };
       }
-      if (sid && /\bultracode\b/i.test(txt)) ultracodeSessions.push(sid);
+      if (cmd) {
+        // `/effort <level>` applies to the live session only and is persisted
+        // nowhere — but the invocation IS in the transcript. Parse it into a
+        // time-stamped event: works retroactively, no hook required.
+        if (sid && cmd.name === '/effort' && cmd.args) {
+          const ts = Date.parse(rec.timestamp);
+          const lvl = cmd.args.toLowerCase().split(/\s+/)[0];
+          if (isFinite(ts)) {
+            if (lvl === 'ultracode') effortEvents.push({ sessionId: sid, ts, effort: null, ultracode: true });
+            else if (EFFORT_LEVELS.has(lvl)) effortEvents.push({ sessionId: sid, ts, effort: lvl, ultracode: false });
+          }
+        }
+        // Command records (incl. stdout echoes like "Set effort level to
+        // ultracode") are not prompt text — never keyword-flag from them.
+      } else if (sid && /\bultracode\b/i.test(txt)) {
+        // The keyword in a real prompt opts the whole session in — works
+        // retroactively, even before any effort source was set up.
+        ultracodeSessions.push(sid);
+      }
       continue;
     }
 
@@ -373,7 +413,7 @@ function parseFile(filePath) {
       sessionMeta[e.sessionId].project = e.project;
     }
   }
-  return { entries, sessionMeta, ultracodeSessions };
+  return { entries, sessionMeta, ultracodeSessions, effortEvents };
 }
 
 // Walk all files; reuse cached parse when mtime is unchanged. Returns the merged
@@ -406,6 +446,7 @@ function parseAll() {
       entries: result.entries,
       sessionMeta: result.sessionMeta,
       ultracodeSessions: result.ultracodeSessions || [],
+      effortEvents: result.effortEvents || [],
     });
     parsed++;
   }
@@ -419,13 +460,15 @@ function parseAll() {
   const globalSeen = new Set();
   const sessionMeta = {};
   const ultracodeSessions = new Set();
-  for (const { entries, sessionMeta: sm, ultracodeSessions: us } of fileCache.values()) {
+  const effortEvents = [];
+  for (const { entries, sessionMeta: sm, ultracodeSessions: us, effortEvents: ev } of fileCache.values()) {
     for (const e of entries) {
       if (globalSeen.has(e.key)) continue;
       globalSeen.add(e.key);
       merged.push(e);
     }
     for (const sid of us || []) ultracodeSessions.add(sid);
+    for (const e of ev || []) effortEvents.push(e);
     for (const sid of Object.keys(sm)) {
       const cur = sessionMeta[sid];
       const inc = sm[sid];
@@ -439,20 +482,22 @@ function parseAll() {
   }
 
   console.log(`[pulse] walked ${files.length} file(s) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
-  return { entries: merged, sessionMeta, ultracodeSessions, fileCount: files.length };
+  return { entries: merged, sessionMeta, ultracodeSessions, effortEvents, fileCount: files.length };
 }
 
 // ---------------------------------------------------------------------------
-// EFFORT / MODE SIDECAR LOG
+// EFFORT / MODE SOURCES
 //
-// Claude Code never writes the reasoning effort level (low/medium/high/xhigh/
-// max, or ultracode) into transcripts, but it DOES deliver it to hooks. The
-// optional hook shipped at hooks/pulse-mode-hook.js (see --effort-setup)
-// records it to a sidecar log — one JSONL line per change:
-//   { ts, sessionId, event, effort, ultracode?, model? }
-// Pulse reads that log and joins effort onto entries by sessionId + timestamp
-// (latest mode record at or before the entry). Cached by mtime like the
-// transcript files. Location is outside ~/.claude on purpose.
+// Two complementary sources reconstruct the reasoning effort level:
+//   1. `/effort <level>` commands parsed straight out of the transcripts
+//      (parseFile) — session-scoped changes, retroactive, zero setup.
+//   2. An optional hook (see --effort-setup) that logs the settings-persisted
+//      effortLevel to a sidecar JSONL — catches levels applied across sessions
+//      without a per-session /effort command. One line per change:
+//        { ts, sessionId, event, effort, ultracode?, model? }
+// Both are merged (mergeModes) into per-session state snapshots and
+// time-joined onto entries (annotateModes). The sidecar is cached by mtime
+// like transcript files, and lives outside ~/.claude on purpose.
 // ---------------------------------------------------------------------------
 
 function modesFilePath() {
@@ -482,21 +527,40 @@ function readModes() {
   return bySession;
 }
 
-// Annotate entries in place with { effort, ultracode } from the sidecar log
-// (time-joined per session) plus transcript-detected ultracode sessions.
+// Merge the hook sidecar with transcript-parsed /effort events into one
+// per-session, time-sorted snapshot list. Copies the cached sidecar arrays —
+// never mutates them.
+function mergeModes(sidecarBySession, effortEvents) {
+  const out = {};
+  for (const sid of Object.keys(sidecarBySession || {})) out[sid] = sidecarBySession[sid].slice();
+  for (const ev of effortEvents || []) {
+    if (!ev.sessionId) continue;
+    (out[ev.sessionId] = out[ev.sessionId] || []).push({ ts: ev.ts, effort: ev.effort || null, ultracode: !!ev.ultracode });
+  }
+  for (const k of Object.keys(out)) out[k].sort((a, b) => a.ts - b.ts);
+  return out;
+}
+
+// Annotate entries in place with { effort, ultracode }. Mode records — hook
+// sidecar lines and transcript /effort events — are state snapshots; each
+// entry takes the latest snapshot at or before it in its session. So an
+// /effort mid-session applies from that point on, and switching (e.g.
+// ultracode → max) turns the previous state off. The ultracode keyword in a
+// real prompt still opts the whole session in.
 function annotateModes(entriesAsc, modesBySession, ultracodeSessions) {
   for (const e of entriesAsc) {
     let effort = null;
     let ultra = ultracodeSessions.has(e.sessionId);
     const recs = modesBySession[e.sessionId];
     if (recs && recs.length) {
-      // latest record at or before this entry; else the session's first record
-      let chosen = recs[0];
+      let chosen = null;
       for (const r of recs) {
         if (r.ts <= e.ts) chosen = r; else break;
       }
-      effort = chosen.effort;
-      if (recs.some((r) => r.ultracode && r.ts <= e.ts + HOUR_MS)) ultra = true;
+      if (chosen) {
+        effort = chosen.effort;
+        if (chosen.ultracode) ultra = true;
+      }
     }
     e.effort = effort;
     e.ultracode = ultra;
@@ -971,10 +1035,11 @@ function collectTitles(obj, fileName, map) {
 // ---------------------------------------------------------------------------
 
 function buildSummary() {
-  const { entries, sessionMeta, ultracodeSessions, fileCount } = parseAll();
+  const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
-  const payload = aggregate(entries, sessionMeta, desktopTitles, now, readModes(), ultracodeSessions);
+  const payload = aggregate(entries, sessionMeta, desktopTitles, now,
+    mergeModes(readModes(), effortEvents), ultracodeSessions);
   // Surface what Pulse is actually reading, so a wrong-directory setup (e.g.
   // Claude Code under WSL while Pulse runs in native Windows) is diagnosable.
   payload.claudeDir = claudeDir();
@@ -1241,10 +1306,11 @@ function effortSetup() {
   const settingsPath = path.join(claudeDir(), 'settings.json');
   console.log('\nPulse — effort logging setup');
   console.log('─'.repeat(64));
-  console.log('Claude Code never writes the reasoning effort level to its');
-  console.log('transcripts, but it does persist it (via /effort) to settings.json.');
-  console.log('Add the hooks below and Pulse records that level per session — for');
-  console.log('every model, Fable included — plus any "ultracode" you type.');
+  console.log('Pulse already reads `/effort <level>` commands straight from your');
+  console.log('session transcripts — that needs NO setup and works retroactively.');
+  console.log('This optional hook covers the one remaining case: an effort level');
+  console.log('persisted in settings.json (applied across sessions) rather than');
+  console.log('set per-session with /effort.');
   console.log('');
   console.log(`1. Open:  ${settingsPath}`);
   console.log('   (create it if missing; if a "hooks" section exists, merge the');

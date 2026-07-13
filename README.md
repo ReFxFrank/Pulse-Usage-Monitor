@@ -142,13 +142,23 @@ Re-running the installer updates to the latest version and restarts the service.
   Code over `tmux`), Pulse runs in single-source mode and derives session titles from the
   first user prompt. No desktop app is required.
 
-## Reasoning-effort logging (optional)
+## Reasoning-effort chips
 
 Claude Code never writes the reasoning effort level (`low`→`max`, ultracode) to
-its transcripts, and does not put it in the hook payload either — but it *does*
-persist the level you pick with `/effort` to `settings.json`. Pulse ships an
-optional hook that reads that level so the dashboard can show effort chips per
-model and session — for **every** model, Fable included:
+its transcripts as data — but the `/effort` **commands you type are recorded in
+them**. Pulse parses those directly, so effort chips work with **zero setup**,
+**retroactively**, and for **every model** (Fable included):
+
+- `/effort max` in a session → entries from that point on show a `max` chip.
+- `/effort ultracode` → the ULTRA chip, until you switch levels again.
+- Typing `ultracode` in a prompt flags the whole session ULTRA (also retroactive).
+- A session that never sets a level shows no chip — Pulse won't guess.
+
+### The optional hook (for settings-persisted levels)
+
+One case transcripts can't cover: an effort level saved in `settings.json`
+(`effortLevel`, applied across sessions) instead of set per-session with
+`/effort`. Pulse ships an optional hook for that:
 
 ```sh
 node server.js --effort-setup     # or: pulse.exe --effort-setup
@@ -157,16 +167,9 @@ node server.js --effort-setup     # or: pulse.exe --effort-setup
 That prints a `hooks` snippet to paste into `~/.claude/settings.json` (Pulse
 never edits `~/.claude` itself). Once added, sessions log their effort level to
 `~/.pulse/modes.jsonl` and the dashboard picks it up automatically. The hook is
-silent, always exits 0, and appends only when the level changes. It reads the
-effort from `settings.json` (`effortLevel`), falling back to the hook payload /
-`CLAUDE_CODE_EFFORT_LEVEL` env if a future Claude Code version exposes it there.
-
-**One caveat:** `/effort` only stores a level when it *differs* from the model's
-default (the default — `high` for the current top models — is stored as absent).
-So a session left at the default has no explicit level to record and shows no
-effort chip. Pick a non-default level, or type `ultracode`, and it appears.
-Ultracode is additionally detected from prompt text, which works even for
-history recorded before the hook was installed.
+silent, always exits 0, appends only on change, and only writes when there is a
+non-default level to record (Claude Code stores the default as absent — so with
+everything at defaults, `~/.pulse` is never even created).
 
 ## What Pulse can and can't see
 

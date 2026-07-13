@@ -123,8 +123,8 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey }) {
                 <InfoTip
                   text={
                     data.modesLogged
-                      ? 'Chips show the reasoning effort (low → max, plus ultracode) recorded by Pulse’s Claude Code hook, and execution speed when fast mode was used.'
-                      : 'Effort levels (high / xhigh / max, ultracode) aren’t written to Claude Code’s transcripts — enable Pulse’s effort logging with:  node server.js --effort-setup  (or pulse.exe --effort-setup). Ultracode sessions are still detected from prompt text.'
+                      ? 'Chips show the reasoning effort (low → max, plus ultracode) from /effort commands in your session transcripts — and from Pulse’s optional hook — plus execution speed when fast mode was used.'
+                      : 'Effort chips appear when a session sets a level with /effort (Pulse reads those commands from the transcripts automatically) or via Pulse’s optional hook (--effort-setup). Ultracode is also detected from prompt text.'
                   }
                 >
                   <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
