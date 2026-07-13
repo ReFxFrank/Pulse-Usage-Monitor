@@ -292,7 +292,10 @@ function parseFile(filePath) {
   try {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch (_) {
-    return { entries: [], sessionMeta: {} };
+    // Read failed — e.g. the file is locked mid-write by Claude Code (common on
+    // Windows). Return null (not empty) so the caller does NOT cache this as
+    // "no data" and instead retries on the next request.
+    return null;
   }
   const lines = raw.split('\n');
   const entries = [];
@@ -347,7 +350,7 @@ function parseAll() {
   const walkMs = Date.now() - walkT0;
   const liveFiles = new Set(files);
 
-  let parsed = 0, skipped = 0;
+  let parsed = 0, skipped = 0, failed = 0;
   for (const f of files) {
     let st;
     try { st = fs.statSync(f); } catch (_) { continue; }
@@ -356,8 +359,14 @@ function parseAll() {
       skipped++;
       continue;
     }
-    const { entries, sessionMeta } = parseFile(f);
-    fileCache.set(f, { mtimeMs: st.mtimeMs, entries, sessionMeta });
+    const result = parseFile(f);
+    if (result === null) {
+      // Read failed this cycle (e.g. locked mid-write). Keep any prior cached
+      // entries and retry next request — do NOT cache the failure.
+      failed++;
+      continue;
+    }
+    fileCache.set(f, { mtimeMs: st.mtimeMs, entries: result.entries, sessionMeta: result.sessionMeta });
     parsed++;
   }
   // Drop cache entries for files that have disappeared.
@@ -387,7 +396,7 @@ function parseAll() {
     }
   }
 
-  console.log(`[pulse] walked ${files.length} file(s) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached); ${merged.length} unique usage records`);
+  console.log(`[pulse] walked ${files.length} file(s) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
   return { entries: merged, sessionMeta };
 }
 
@@ -591,6 +600,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
 
   const payload = {
     generatedAt: now,
+    latestTs: asc.length ? asc[asc.length - 1].ts : null, // newest record on this machine
     totals: {
       cost: entries.reduce((a, e) => a + e.cost, 0),
       tokens: entries.reduce((a, e) => a + tokensOf(e), 0),

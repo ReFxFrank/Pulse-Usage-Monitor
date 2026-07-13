@@ -46,6 +46,7 @@
   .meta { text-align: right; font-size: 12.5px; color: var(--text-3); }
   .meta .updated { color: var(--text-2); }
   .meta .updated b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .meta #latest b { color: var(--text-2); }
 
   /* ---- grid & cards ---- */
   .grid { display: grid; gap: 14px; }
@@ -136,6 +137,7 @@
     </div>
     <div class="meta">
       <div class="updated">updated <b id="updated">—</b> · refreshes every 10s</div>
+      <div id="latest">—</div>
       <div id="scope">—</div>
     </div>
   </header>
@@ -266,6 +268,14 @@
 
     var allSrc = d.allSources || [];
     document.getElementById('updated').textContent = clockTime(d.generatedAt);
+    var latestEl = document.getElementById('latest');
+    if (d.latestTs) {
+      var staleMs = d.generatedAt - d.latestTs;
+      var warn = staleMs > 3 * 3600000; // newest record older than 3h → dim/flag
+      latestEl.innerHTML = 'latest activity on this machine: <b' + (warn ? ' style="color:var(--warn)"' : '') + '>' + ago(d.latestTs) + '</b>';
+    } else {
+      latestEl.textContent = 'no usage recorded on this machine';
+    }
     document.getElementById('scope').textContent =
       num(d.totals.messages) + ' msgs · ' + num(d.totals.sessions) + ' sessions · ' +
       (allSrc.length <= 1 ? 'source: ' + (allSrc[0] || 'cli') : allSrc.length + ' sources');
