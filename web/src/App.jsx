@@ -118,7 +118,12 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey }) {
 
           <div className="grid cols-2">
             <Card delay={0.24}>
-              <h2>By model · {period.label}</h2>
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                By model · {period.label}
+                <InfoTip text="Chips show execution speed — fast vs standard — the only runtime mode Claude Code writes to the logs. Reasoning effort (high / xhigh / max) and ultracode are request-time settings that are not recorded, so they can’t be shown.">
+                  <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
+                </InfoTip>
+              </h2>
               <BarList rows={modelRows} />
             </Card>
             {period.singleSource ? (

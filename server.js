@@ -265,6 +265,12 @@ function normalize(rec) {
     ts,
     model: msg.model || 'unknown',
     source: rec.entrypoint || 'cli', // §3.4 — default cli when absent
+    // Execution mode as recorded by Claude Code. NOTE: reasoning effort
+    // (high/xhigh/max) and "ultracode" are request-time settings that are NOT
+    // written to the transcript, so they cannot be shown. `speed` (fast vs
+    // standard) and `service_tier` are the only runtime modes that ARE logged.
+    speed: u.speed || 'standard',
+    serviceTier: u.service_tier || 'standard',
     inputTokens: num(u.input_tokens),
     outputTokens: num(u.output_tokens),
     cacheWrite5m,
@@ -584,11 +590,11 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
     if (!s) {
       s = sessMap[sid] = {
         sessionId: sid, cost: 0, tokens: 0, messages: 0,
-        models: new Set(), sources: new Set(), lastTs: 0, firstTs: e.ts,
+        models: new Set(), sources: new Set(), speeds: new Set(), lastTs: 0, firstTs: e.ts,
       };
     }
     s.cost += e.cost; s.tokens += tokensOf(e); s.messages++;
-    s.models.add(e.model); s.sources.add(e.source);
+    s.models.add(e.model); s.sources.add(e.source); s.speeds.add(e.speed);
     if (e.ts > s.lastTs) s.lastTs = e.ts;
   }
   const recentSessions = Object.values(sessMap)
@@ -599,6 +605,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now) {
       title: sessionTitle(s.sessionId, sessionMeta, desktopTitles),
       source: s.sources.size === 1 ? Array.from(s.sources)[0] : 'mixed',
       models: Array.from(s.models),
+      speeds: Array.from(s.speeds).sort(),
       cost: s.cost,
       tokens: s.tokens,
       messages: s.messages,
@@ -653,10 +660,13 @@ function buildPeriod(key, label, entries, dayList, allSources) {
       b.bySource[e.source] = (b.bySource[e.source] || 0) + e.cost;
     }
     cost += e.cost; tokens += tk; srcSet.add(e.source);
-    const m = byModel[e.model] || (byModel[e.model] = { cost: 0, tokens: 0, messages: 0 });
+    const m = byModel[e.model] || (byModel[e.model] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
     m.cost += e.cost; m.tokens += tk; m.messages++;
-    const s = bySource[e.source] || (bySource[e.source] = { cost: 0, tokens: 0, messages: 0 });
+    m.speeds[e.speed] = (m.speeds[e.speed] || 0) + 1;
+    m.tiers[e.serviceTier] = (m.tiers[e.serviceTier] || 0) + 1;
+    const s = bySource[e.source] || (bySource[e.source] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
     s.cost += e.cost; s.tokens += tk; s.messages++;
+    s.speeds[e.speed] = (s.speeds[e.speed] || 0) + 1;
     if (e.sessionId) sess.add(e.sessionId);
   }
   const sources = Array.from(srcSet).sort();

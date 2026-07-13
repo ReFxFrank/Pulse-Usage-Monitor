@@ -140,7 +140,13 @@ svg { display: block; }
 
 /* horizontal bars */
 .hbars { display: flex; flex-direction: column; gap: 13px; margin-top: 4px; }
-.hbar { display: grid; grid-template-columns: 150px 1fr auto; align-items: center; gap: 13px; font-size: 13px; }
+.hbar { display: grid; grid-template-columns: 160px 1fr auto auto; align-items: center; gap: 13px; font-size: 13px; }
+@media (max-width: 620px) { .hbar { grid-template-columns: 120px 1fr auto; } .hbar .spd { display: none; } }
+
+/* speed / mode chips (the only runtime mode Claude Code records) */
+.spd { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+.spdb { font-family: var(--mono); font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 6px; background: rgba(255, 255, 255, 0.05); color: var(--text-3); border: 1px solid var(--stroke); white-space: nowrap; }
+.spdb.hot { color: var(--accent-3); background: rgba(155, 140, 255, 0.15); border-color: rgba(155, 140, 255, 0.32); }
 .hbar .nm { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
 .hbar .nm i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
 .hbar .track { background: rgba(255, 255, 255, 0.05); border-radius: 6px; height: 18px; overflow: hidden; }

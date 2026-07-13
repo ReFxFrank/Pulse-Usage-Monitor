@@ -45,6 +45,15 @@ export function dur(ms) {
   const sec = s % 60;
   return h + 'h ' + pad(m) + 'm ' + pad(sec) + 's';
 }
+// compact H:MM:SS — fits inside the reset ring without overflowing
+export function durClock(ms) {
+  if (ms == null || ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h + ':' + pad(m) + ':' + pad(sec);
+}
 export function ago(ms) {
   const d = Date.now() - ms;
   if (d < 60000) return 'just now';

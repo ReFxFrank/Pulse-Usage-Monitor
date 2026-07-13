@@ -3,7 +3,7 @@ import { motion, animate } from 'framer-motion';
 import * as Select from '@radix-ui/react-select';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { ProgressRing } from './charts.jsx';
-import { money2, tokens, num, pct, dur, hm, ago, ACCENT } from './lib.js';
+import { money2, tokens, num, pct, durClock, hm, ago, ACCENT } from './lib.js';
 
 const EASE = [0.2, 0.7, 0.2, 1];
 
@@ -104,9 +104,11 @@ export function CurrentBlock({ cb, delay }) {
             <div className="chip">vs heaviest block&nbsp;<b>{pct(cb.vsPeakCostPct)}</b></div>
           )}
         </div>
-        <ProgressRing fraction={frac} size={94} stroke={9}>
-          <div style={{ fontSize: 9.5, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>resets</div>
-          <div className="mono" style={{ fontSize: 12.5, color: 'var(--text)', fontWeight: 600, marginTop: 1 }}>{dur(remaining)}</div>
+        <ProgressRing fraction={frac} size={96} stroke={9}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.15 }}>
+            <span style={{ fontSize: 8.5, color: 'var(--text-3)', letterSpacing: '0.11em', textTransform: 'uppercase' }}>resets in</span>
+            <span className="mono" style={{ fontSize: 14, color: 'var(--text)', fontWeight: 600, whiteSpace: 'nowrap', letterSpacing: '-0.02em' }}>{durClock(remaining)}</span>
+          </div>
         </ProgressRing>
       </div>
       <div className="sub" style={{ marginTop: 12 }}>{hm(cb.start)} → {hm(cb.end)}</div>
@@ -150,6 +152,22 @@ export function Rollup({ label, r, delay }) {
   );
 }
 
+// speed/mode chips — the only runtime execution mode Claude Code records.
+// `speeds` is a { speedName: count } map, or an array of names.
+export function SpeedBadges({ speeds, align = 'flex-end' }) {
+  let entries;
+  if (Array.isArray(speeds)) entries = speeds.map((s) => [s, 0]);
+  else entries = Object.entries(speeds || {}).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return <span className="spd" style={{ justifyContent: align }} />;
+  return (
+    <span className="spd" style={{ justifyContent: align }}>
+      {entries.map(([sp]) => (
+        <span key={sp} className={'spdb' + (sp !== 'standard' ? ' hot' : '')}>{sp}</span>
+      ))}
+    </span>
+  );
+}
+
 // horizontal bars for by-model / by-source
 export function BarList({ rows }) {
   let max = 0;
@@ -170,6 +188,7 @@ export function BarList({ rows }) {
               />
             </div>
             <div className="v">{money2(r.cost)} <small>· {tokens(r.tokens)}</small></div>
+            <SpeedBadges speeds={r.speeds} />
           </div>
         </InfoTip>
       ))}
@@ -184,7 +203,7 @@ export function SessionsTable({ sessions }) {
       <table>
         <thead>
           <tr>
-            <th>Session</th><th>Source</th><th>Model(s)</th>
+            <th>Session</th><th>Source</th><th>Speed</th><th>Model(s)</th>
             <th className="n">Cost</th><th className="n">Tokens</th><th className="n">Msgs</th><th className="n">Last</th>
           </tr>
         </thead>
@@ -193,6 +212,7 @@ export function SessionsTable({ sessions }) {
             <tr key={s.sessionId}>
               <td className="title">{s.title}</td>
               <td><span className="badge">{s.source}</span></td>
+              <td><SpeedBadges speeds={s.speeds} align="flex-start" /></td>
               <td style={{ color: 'var(--text-3)' }}>{s.models.join(', ')}</td>
               <td className="n">{money2(s.cost)}</td>
               <td className="n">{tokens(s.tokens)}</td>
