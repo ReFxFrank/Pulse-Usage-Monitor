@@ -865,8 +865,50 @@ function buildSummary() {
   return payload;
 }
 
-function readIndexHtml() {
-  return fs.readFileSync(path.join(__dirname, 'index.html'));
+// The built React frontend (Vite output). Served as static files; the server
+// itself keeps zero RUNTIME dependencies — the React toolchain is build-time
+// only (see web/). Run `npm run build` if this directory is missing.
+const WEB_DIR = path.join(__dirname, 'web', 'dist');
+
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.ttf': 'font/ttf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.map': 'application/json; charset=utf-8',
+};
+
+// Serve a file from WEB_DIR for the given request path. Returns true if handled.
+// Path-traversal safe: the resolved path must stay within WEB_DIR. Unknown
+// non-asset routes fall back to index.html (SPA). Returns false only when the
+// frontend build is missing entirely.
+function serveStatic(route, res) {
+  const indexFile = path.join(WEB_DIR, 'index.html');
+  if (!fs.existsSync(indexFile)) return false; // not built
+
+  let rel = decodeURIComponent(route);
+  if (rel === '/' || rel === '') rel = '/index.html';
+  // Resolve within WEB_DIR and reject anything that escapes it.
+  const resolved = path.normalize(path.join(WEB_DIR, rel));
+  let target = resolved;
+  if (!target.startsWith(WEB_DIR) || !fs.existsSync(target) || fs.statSync(target).isDirectory()) {
+    target = indexFile; // SPA fallback (also covers deep links / unknown routes)
+  }
+  const ext = path.extname(target).toLowerCase();
+  const type = CONTENT_TYPES[ext] || 'application/octet-stream';
+  // Immutable hashed assets can cache hard; index.html must not.
+  const cache = target === indexFile ? 'no-store' : 'public, max-age=31536000, immutable';
+  res.writeHead(200, { 'Content-Type': type, 'Cache-Control': cache });
+  res.end(fs.readFileSync(target));
+  return true;
 }
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -877,11 +919,6 @@ function startServer(port, host) {
     const route = parsed.pathname;
 
     try {
-      if (route === '/' || route === '/index.html') {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(readIndexHtml());
-        return;
-      }
       if (route === '/api/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -896,8 +933,12 @@ function startServer(port, host) {
         res.end(JSON.stringify(payload));
         return;
       }
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not found');
+      // Everything else: the built frontend (SPA).
+      if (serveStatic(route, res)) return;
+
+      // Frontend not built.
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<h1>Pulse frontend not built</h1><p>Run <code>npm run build</code> (installs and builds <code>web/</code>), then reload.</p>');
     } catch (err) {
       console.error('[pulse] request error:', err && err.stack ? err.stack : err);
       res.writeHead(500, { 'Content-Type': 'application/json' });

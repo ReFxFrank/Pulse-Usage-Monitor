@@ -1,0 +1,184 @@
+import { useMemo, useState } from 'react';
+import { motion } from 'framer-motion';
+import { useSummary, makeColorMap, ACCENT, money2, tokens, num, clockTime, ago } from './lib.js';
+import { SpendChart, Sparkline } from './charts.jsx';
+import {
+  Card, CurrentBlock, BurnRate, Rollup, BarList, SessionsTable, PeriodSelect, Legend, InfoTip,
+} from './panels.jsx';
+
+export default function App() {
+  const { data, error, loading } = useSummary();
+  const [periodKey, setPeriodKey] = useState('last30');
+
+  const colorMaps = useMemo(() => ({
+    src: makeColorMap(data?.allSources),
+    model: makeColorMap(data?.allModels),
+  }), [data?.allSources, data?.allModels]);
+
+  if (!data) {
+    return (
+      <Shell>
+        <div className="center">
+          {error ? (
+            <div>
+              <h2>Can’t reach the server</h2>
+              <p>Is <code>node server.js</code> running? {error}</p>
+            </div>
+          ) : (
+            <h2>Reading your Claude Code history…</h2>
+          )}
+        </div>
+      </Shell>
+    );
+  }
+
+  const latest = data.latestTs;
+  const stale = latest && data.generatedAt - latest > 3 * 3600 * 1000;
+  const allSrc = data.allSources || [];
+
+  return (
+    <Shell
+      header={
+        <div className="hmeta">
+          <div>updated <b>{clockTime(data.generatedAt)}</b> · refreshes every 10s</div>
+          <div>
+            {latest
+              ? <>latest activity: <b className={stale ? 'warnc' : ''}>{ago(latest)}</b></>
+              : 'no usage recorded on this machine'}
+          </div>
+          <div>{num(data.totals.messages)} msgs · {num(data.totals.sessions)} sessions · {allSrc.length <= 1 ? `source: ${allSrc[0] || 'cli'}` : `${allSrc.length} sources`}</div>
+        </div>
+      }
+      footer={data}
+    >
+      {!data.hasData ? (
+        <div className="center">
+          <div>
+            <h2>No usage yet</h2>
+            <p>Pulse is watching <code>{data.claudeDir}</code>. Run Claude Code and your usage appears here — the page refreshes every 10 seconds.</p>
+          </div>
+        </div>
+      ) : (
+        <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} />
+      )}
+    </Shell>
+  );
+}
+
+function Dashboard({ data, colorMaps, periodKey, setPeriodKey }) {
+  const periods = data.periods || [];
+  let period = periods.find((p) => p.key === periodKey);
+  if (!period) period = periods[0];
+
+  const modelRows = period
+    ? Object.keys(period.byModel).sort((a, b) => period.byModel[b].cost - period.byModel[a].cost)
+        .map((m) => ({ name: m, ...period.byModel[m], color: colorMaps.model.get(m) }))
+    : [];
+  const sourceRows = period
+    ? Object.keys(period.bySource).sort((a, b) => period.bySource[b].cost - period.bySource[a].cost)
+        .map((s) => ({ name: s, ...period.bySource[s], color: colorMaps.src.get(s) }))
+    : [];
+
+  return (
+    <>
+      {data.selfCheck && !data.selfCheck.ok && (
+        <div className="warnbar">⚠ internal self-check: {data.selfCheck.issues.join('; ')}</div>
+      )}
+
+      <div className="grid stats">
+        <CurrentBlock cb={data.currentBlock} delay={0} />
+        <BurnRate burn={data.burnRate} delay={0.05} />
+        <Rollup label="Today" r={data.today} delay={0.1} />
+        <Rollup label="Last 7 days" r={data.week} delay={0.15} />
+      </div>
+
+      {period && (
+        <>
+          <Card delay={0.2} hover={false}>
+            <div className="h2row">
+              <h2 style={{ marginBottom: 0 }}>
+                Spend&nbsp;
+                <InfoTip text="Estimated at Claude API list prices. On a Pro/Max plan this reflects relative usage, not a bill. Pick a month to see fixed calendar-month totals.">
+                  <span style={{ color: 'var(--text-3)', cursor: 'help' }}>ⓘ</span>
+                </InfoTip>
+              </h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                <PeriodSelect periods={periods} value={period.key} onChange={setPeriodKey} />
+                <Legend period={period} colorMap={colorMaps.src} single={period.singleSource} />
+              </div>
+            </div>
+            <div className="sub" style={{ margin: '2px 0 14px' }}>
+              <span className="mono" style={{ color: 'var(--text)', fontSize: 17 }}>{money2(period.cost)}</span>
+              {' · '}<span className="mono">{tokens(period.tokens)}</span> tokens
+              {' · '}<span className="mono">{num(period.messages)}</span> msgs
+              {' · '}<span className="mono">{num(period.sessions)}</span> sessions
+            </div>
+            <SpendChart period={period} colorMap={colorMaps.src} />
+          </Card>
+
+          <div className="grid cols-2">
+            <Card delay={0.24}>
+              <h2>By model · {period.label}</h2>
+              <BarList rows={modelRows} />
+            </Card>
+            {period.singleSource ? (
+              <Card delay={0.28}>
+                <h2>By source · {period.label}</h2>
+                <div className="sub" style={{ marginTop: 2, marginBottom: 4 }}>
+                  Single source — <b style={{ color: 'var(--text-2)' }}>{period.sources[0] || 'cli'}</b> accounts for 100% of this period.
+                </div>
+                <Sparkline period={period} />
+              </Card>
+            ) : (
+              <Card delay={0.28}>
+                <h2>By source · {period.label}</h2>
+                <BarList rows={sourceRows} />
+              </Card>
+            )}
+          </div>
+        </>
+      )}
+
+      <Card delay={0.32} hover={false}>
+        <h2>Recent sessions</h2>
+        <SessionsTable sessions={data.recentSessions} />
+      </Card>
+    </>
+  );
+}
+
+function Shell({ children, header, footer }) {
+  return (
+    <div className="wrap">
+      <motion.header className="hdr" initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
+        <div className="brand">
+          <div className="logo">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M3 12h4l2-6 4 14 2-8h6" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div>
+            <h1>Pulse</h1>
+            <div className="tag"><span className="dot" />Claude Code usage · live</div>
+          </div>
+        </div>
+        {header}
+      </motion.header>
+
+      {children}
+
+      {footer && (
+        <footer>
+          <div className="disc">
+            Costs are <b>estimates</b> at Claude API list prices — on a Pro/Max subscription they express
+            relative usage, not a bill. Pulse runs entirely on your machine, reads <code>~/.claude</code> read-only,
+            and makes no network calls.
+          </div>
+          <div className="reading">
+            reading: {footer.claudeDir} · {num(footer.fileCount || 0)} session file{footer.fileCount === 1 ? '' : 's'} found
+          </div>
+        </footer>
+      )}
+    </div>
+  );
+}
