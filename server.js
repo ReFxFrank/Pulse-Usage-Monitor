@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.1.2';
+const PULSE_VERSION = '1.2.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -224,6 +224,14 @@ function priceFor(model, ts) {
 // §5 per-entry cost. Cache-creation tokens without a TTL breakdown are treated
 // as 5-minute writes (×1.25) — documented assumption, handled at normalize().
 function costForEntry(e) {
+  if (e.provider === 'openai') {
+    const p = priceForOpenAI(e.model);
+    return (
+      (e.inputTokens  / 1e6) * p.input +
+      (e.outputTokens / 1e6) * p.output +
+      (e.cacheRead    / 1e6) * p.input * OPENAI_CACHE_READ_MULT
+    );
+  }
   const price = priceFor(e.model, e.ts);
   return (
     (e.inputTokens  / 1e6) * price.input +
@@ -233,6 +241,51 @@ function costForEntry(e) {
     (e.cacheRead    / 1e6) * price.input * CACHE_READ_MULT +
     (e.webSearches  / 1000) * WEB_SEARCH_PER_1K
   );
+}
+
+// ---------------------------------------------------------------------------
+// OPENAI / CODEX PRICING
+// $/MTok at OpenAI API list prices (platform.openai.com/pricing). On a
+// ChatGPT Plus/Pro subscription these are relative-usage estimates, exactly
+// like the Claude table above. Cached input bills at ~10% of the input price
+// for the gpt-5 family; output prices include reasoning tokens.
+// ---------------------------------------------------------------------------
+const PRICING_OPENAI = {
+  // Codex defaults (gpt-5.x family — verify at platform.openai.com/pricing)
+  'gpt-5.6':            { input: 1.25, output: 10 },
+  'gpt-5.1-codex-mini': { input: 0.25, output: 2 },
+  'gpt-5.1-codex':      { input: 1.25, output: 10 },
+  'gpt-5.1':            { input: 1.25, output: 10 },
+  'gpt-5-codex':        { input: 1.25, output: 10 },
+  'gpt-5-mini':         { input: 0.25, output: 2 },
+  'gpt-5-nano':         { input: 0.05, output: 0.4 },
+  'gpt-5':              { input: 1.25, output: 10 },
+  'codex-mini-latest':  { input: 1.5,  output: 6 },
+  // Older strings that can appear in history
+  'o3':                 { input: 2,    output: 8 },
+  'o4-mini':            { input: 1.1,  output: 4.4 },
+  'gpt-4.1':            { input: 2,    output: 8 },
+  'gpt-4o':             { input: 2.5,  output: 10 },
+  // Fallback for unknown / new model strings (logged once, same as Claude).
+  '__default__':        { input: 1.25, output: 10 },
+};
+const OPENAI_CACHE_READ_MULT = 0.10;
+
+function priceForOpenAI(model) {
+  let p = PRICING_OPENAI[model];
+  if (!p) {
+    // Longest-prefix match: gpt-5.1-codex-mini beats gpt-5.1-codex beats gpt-5.
+    let best = '';
+    for (const key of Object.keys(PRICING_OPENAI)) {
+      if (key !== '__default__' && model.startsWith(key) && key.length > best.length) best = key;
+    }
+    if (best) p = PRICING_OPENAI[best];
+  }
+  if (!p) {
+    logUnknownModel(model);
+    p = PRICING_OPENAI.__default__;
+  }
+  return p;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +358,16 @@ function walkJsonl(dir, out, seen, depth) {
 
 function projectsRoot() {
   return path.join(claudeDir(), 'projects');
+}
+
+// OpenAI Codex CLI home (same read-only rules as ~/.claude). Codex writes
+// rollout logs to ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
+function codexDir() {
+  return process.env.CODEX_DIR || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+}
+
+function codexSessionsRoot() {
+  return path.join(codexDir(), 'sessions');
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +461,7 @@ function normalize(rec) {
 
   const e = {
     ts,
+    provider: 'anthropic',
     model: msg.model || 'unknown',
     source: rec.entrypoint || 'cli', // §3.4 — default cli when absent
     // Execution mode as recorded by Claude Code. NOTE: reasoning effort
@@ -515,13 +579,121 @@ function parseFile(filePath) {
   return { entries, sessionMeta, ultracodeSessions, effortEvents };
 }
 
+// ---------------------------------------------------------------------------
+// OPENAI CODEX PARSER
+// Codex rollout files are JSONL event streams:
+//   {"timestamp":"ISO","type":"session_meta"|"turn_context"|"event_msg"|…,
+//    "payload":{…}}
+// Usage arrives in event_msg payloads of type "token_count":
+//   payload.info.last_token_usage   — this turn's usage (preferred)
+//   payload.info.total_token_usage  — cumulative session usage (delta fallback)
+// with { input_tokens (INCLUDES cached), cached_input_tokens, output_tokens
+// (includes reasoning), reasoning_output_tokens, total_tokens }.
+// Model + reasoning effort come from turn_context; the session id, cwd and
+// first user prompt from session_meta / user_message events.
+// Shapes verified against a real rollout written by codex 0.144.3.
+// ---------------------------------------------------------------------------
+function diffUsage(tot, prev) {
+  const d = {};
+  for (const k of ['input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens']) {
+    d[k] = Math.max(0, num(tot[k]) - num(prev[k]));
+  }
+  return d;
+}
+
+function parseCodexFile(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (_) {
+    return null; // locked mid-write — retry next request, do not cache
+  }
+  const entries = [];
+  const sessionMeta = {};
+  let sid = '';
+  let project = '';
+  let model = 'gpt-unknown';
+  let effort = null;
+  let prevTotal = null;
+
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch (_) { continue; } // partial trailing write
+    if (!rec || typeof rec !== 'object') continue;
+    const p = rec.payload || {};
+
+    if (rec.type === 'session_meta') {
+      sid = p.session_id || p.id || sid;
+      project = p.cwd || project;
+      if (sid && !sessionMeta[sid]) sessionMeta[sid] = { firstUserText: '', project };
+      continue;
+    }
+    if (rec.type === 'turn_context') {
+      if (p.model) model = String(p.model);
+      const eff = p.effort ||
+        (p.collaboration_mode && p.collaboration_mode.settings && p.collaboration_mode.settings.reasoning_effort);
+      if (eff) effort = String(eff);
+      continue;
+    }
+    if (rec.type === 'event_msg' && p.type === 'user_message') {
+      if (sid && sessionMeta[sid] && !sessionMeta[sid].firstUserText && typeof p.message === 'string') {
+        sessionMeta[sid].firstUserText = p.message.replace(/\s+/g, ' ').trim();
+      }
+      continue;
+    }
+    if (rec.type === 'event_msg' && p.type === 'token_count') {
+      const info = p.info || {};
+      const ts = Date.parse(rec.timestamp);
+      if (!isFinite(ts)) continue;
+      const tot = info.total_token_usage || null;
+      let u = info.last_token_usage || null;
+      if (!u && tot) u = prevTotal ? diffUsage(tot, prevTotal) : tot;
+      if (tot) prevTotal = tot;
+      if (!u) continue;
+      const input = num(u.input_tokens), cached = num(u.cached_input_tokens), output = num(u.output_tokens);
+      if (input + output <= 0) continue;
+      const e = {
+        ts,
+        provider: 'openai',
+        model,
+        source: 'codex',
+        speed: 'standard',
+        serviceTier: 'standard',
+        // OpenAI semantics: input INCLUDES cached; split so tokensOf() and the
+        // cache-discounted cost both come out right.
+        inputTokens: Math.max(0, input - cached),
+        outputTokens: output,
+        cacheWrite5m: 0,
+        cacheWrite1h: 0,
+        cacheRead: cached,
+        webSearches: 0,
+        sessionId: sid || path.basename(filePath, '.jsonl'),
+        project,
+        effort, // parse-time; annotateModes preserves pre-set values
+        // Replay-safe key: a resumed rollout replaying the same cumulative
+        // snapshot at the same timestamp dedups to one entry. Falls back to
+        // the filename so sid-less files can never collide with each other.
+        key: 'cx:' + (sid || path.basename(filePath, '.jsonl')) + ':' + ts + ':' + (tot ? num(tot.total_tokens) : input + output),
+      };
+      e.cost = costForEntry(e);
+      entries.push(e);
+      continue;
+    }
+  }
+  return { entries, sessionMeta, ultracodeSessions: [], effortEvents: [] };
+}
+
 // Walk all files; reuse cached parse when mtime is unchanged. Returns the merged
 // (globally deduped) entry list plus a merged sessionId->meta map. Logs a
 // one-line "parsed X, skipped Y (cached)" so the mtime cache is observable.
 function parseAll() {
   const walkT0 = Date.now();
-  const files = walkJsonl(projectsRoot());
+  const claudeFiles = walkJsonl(projectsRoot());
+  const codexFiles = walkJsonl(codexSessionsRoot());
   const walkMs = Date.now() - walkT0;
+  const codexSet = new Set(codexFiles);
+  const files = claudeFiles.concat(codexFiles);
   const liveFiles = new Set(files);
 
   let parsed = 0, skipped = 0, failed = 0;
@@ -533,7 +705,7 @@ function parseAll() {
       skipped++;
       continue;
     }
-    const result = parseFile(f);
+    const result = codexSet.has(f) ? parseCodexFile(f) : parseFile(f);
     if (result === null) {
       // Read failed this cycle (e.g. locked mid-write). Keep any prior cached
       // entries and retry next request — do NOT cache the failure.
@@ -580,8 +752,11 @@ function parseAll() {
     }
   }
 
-  console.log(`[pulse] walked ${files.length} file(s) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
-  return { entries: merged, sessionMeta, ultracodeSessions, effortEvents, fileCount: files.length };
+  console.log(`[pulse] walked ${files.length} file(s) (${claudeFiles.length} claude, ${codexFiles.length} codex) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
+  return {
+    entries: merged, sessionMeta, ultracodeSessions, effortEvents,
+    fileCount: files.length, codexFileCount: codexFiles.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -648,8 +823,10 @@ function mergeModes(sidecarBySession, effortEvents) {
 // real prompt still opts the whole session in.
 function annotateModes(entriesAsc, modesBySession, ultracodeSessions) {
   for (const e of entriesAsc) {
-    let effort = null;
-    let ultra = ultracodeSessions.has(e.sessionId);
+    // Codex entries carry effort straight from their rollout's turn_context —
+    // set at parse time; never overwrite it with (absent) Claude-side records.
+    let effort = e.effort || null;
+    let ultra = !!e.ultracode || ultracodeSessions.has(e.sessionId);
     const recs = modesBySession[e.sessionId];
     if (recs && recs.length) {
       let chosen = null;
@@ -738,7 +915,10 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   const modesLogged = Object.keys(modesBySession || {}).length > 0;
 
   // ---- 5-hour blocks + active block ----
-  const rawBlocks = computeBlocks(asc);
+  // Claude entries only: the 5h window is CLAUDE's rate-limit concept; Codex
+  // has its own separate limits and must not distort the reset countdown.
+  const claudeAsc = asc.filter((e) => e.provider !== 'openai');
+  const rawBlocks = computeBlocks(claudeAsc);
   const blocks = rawBlocks.map(summarizeBlock);
   let activeBlock = null;
   for (const b of blocks) {
@@ -1022,10 +1202,12 @@ function selfCheck(payload, asc, rawBlocks) {
     issues.push('today is not a subset of the 7-day window');
   }
 
-  // every block's entries ⊆ all entries (count match)
+  // every block's entries ⊆ Claude entries (blocks are Claude-only; Codex has
+  // its own limit windows and is excluded from block reconstruction)
   const blockEntryCount = rawBlocks.reduce((a, b) => a + b.entries.length, 0);
-  if (blockEntryCount !== asc.length) {
-    issues.push(`block entries (${blockEntryCount}) != all entries (${asc.length})`);
+  const claudeCount = asc.reduce((a, e) => a + (e.provider !== 'openai' ? 1 : 0), 0);
+  if (blockEntryCount !== claudeCount) {
+    issues.push(`block entries (${blockEntryCount}) != claude entries (${claudeCount})`);
   }
 
   // no duplicate dedup keys remain
@@ -1134,7 +1316,7 @@ function collectTitles(obj, fileName, map) {
 // ---------------------------------------------------------------------------
 
 function buildSummary() {
-  const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount } = parseAll();
+  const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount, codexFileCount } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
   const payload = aggregate(entries, sessionMeta, desktopTitles, now,
@@ -1143,6 +1325,9 @@ function buildSummary() {
   // Claude Code under WSL while Pulse runs in native Windows) is diagnosable.
   payload.claudeDir = claudeDir();
   payload.fileCount = fileCount;
+  payload.codexDir = codexDir();
+  payload.codexFileCount = codexFileCount || 0;
+  payload.hasCodex = (codexFileCount || 0) > 0;
   // Server panel: identity + update state.
   payload.version = PULSE_VERSION;
   payload.serverStartTs = SERVER_START;
@@ -2129,6 +2314,8 @@ function main() {
     console.log('  --version         print the version and exit');
     console.log('  --inspect-schema  print observed record schema and exit');
     console.log('  env CLAUDE_DIR    override ~/.claude location');
+    console.log('  env CODEX_DIR     override ~/.codex location (OpenAI Codex CLI logs,');
+    console.log('                    ingested automatically when present)');
     return;
   }
   if (args.version) { console.log('pulse v' + PULSE_VERSION); return; }

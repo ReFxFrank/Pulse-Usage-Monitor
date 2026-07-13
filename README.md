@@ -26,6 +26,9 @@ which sessions ran at which reasoning effort — all from the logs already on yo
 - 📅 **Any period** — rolling 30 days or any past calendar month from the dropdown.
 - 🤖 **Per-model & per-source breakdowns** — cost, tokens, and messages for every model
   and entry point (CLI, desktop app), with stable colors.
+- 🟢 **OpenAI Codex support** — if you also use the [Codex CLI](https://github.com/openai/codex),
+  Pulse ingests `~/.codex/sessions` automatically: `gpt-*` model rows, a `codex`
+  source, session titles, reasoning-effort chips, and costs at OpenAI list prices.
 - 🧠 **Reasoning-effort chips** — see which sessions ran at `low → max`, ultracode, or
   fast mode. Works **out of the box, retroactively**: Pulse reads your `/effort`
   commands straight from the session transcripts.
@@ -123,6 +126,25 @@ and your page reloads on the new version).
 <div align="center">
   <img src=".github/assets/server.png" alt="Server panel: logs, stop, updates" width="920" />
 </div>
+
+## 🟢 Codex / ChatGPT support
+
+If the [OpenAI Codex CLI](https://github.com/openai/codex) is installed, Pulse
+ingests its session logs (`~/.codex/sessions`, override with `CODEX_DIR`)
+alongside Claude Code — nothing to configure:
+
+- `gpt-*` models appear in **By model**, `codex` in **By source**, sessions in
+  the table with titles and reasoning-effort chips (read from each turn's
+  context in the rollout files).
+- Costs use **OpenAI API list prices** with the cached-input discount — like
+  the Claude numbers, they're relative-usage estimates on a ChatGPT
+  Plus/Pro subscription, not a bill.
+- The **Current 5h block** stays Claude-only: Codex has its own separate
+  limit windows and must not distort Claude's reset countdown.
+
+**Scope:** this covers the Codex *CLI*, which logs locally. ChatGPT in the
+browser or mobile app writes no local logs (same as claude.ai) and cannot
+appear — no local dashboard can see it.
 
 ## 🧠 Reasoning-effort chips
 

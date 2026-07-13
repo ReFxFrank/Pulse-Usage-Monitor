@@ -95,7 +95,7 @@ export function CurrentBlock({ cb, delay }) {
     <Card delay={delay} className="tile">
       <div className="label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         Current 5h block
-        <InfoTip text="Reconstructed from this machine's logs: the first message after a ≥5h gap opens a 5-hour window. Claude's REAL window is opened by your first message on any surface — claude.ai, mobile, another computer — so if that happened off this machine, the actual reset can be earlier than shown here.">
+        <InfoTip text="Claude usage only (Codex has separate limits). Reconstructed from this machine's logs: the first message after a ≥5h gap opens a 5-hour window. Claude's REAL window is opened by your first message on any surface — claude.ai, mobile, another computer — so if that happened off this machine, the actual reset can be earlier than shown here.">
           <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
         </InfoTip>
       </div>

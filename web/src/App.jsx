@@ -58,6 +58,7 @@ export default function App() {
   return (
     <Shell
       version={data.version}
+      codex={data.hasCodex}
       header={
         <div className="hmeta">
           <div className="hactions">
@@ -195,7 +196,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped }) {
   );
 }
 
-function Shell({ children, header, footer, version }) {
+function Shell({ children, header, footer, version, codex }) {
   return (
     <div className="wrap">
       <motion.header className="hdr" initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
@@ -207,7 +208,7 @@ function Shell({ children, header, footer, version }) {
           </div>
           <div>
             <h1>Pulse</h1>
-            <div className="tag"><span className="dot" />Claude Code usage · live{version ? <span className="ver">v{version}</span> : null}</div>
+            <div className="tag"><span className="dot" />{codex ? 'Claude Code + Codex' : 'Claude Code usage'} · live{version ? <span className="ver">v{version}</span> : null}</div>
           </div>
         </div>
         {header}
@@ -224,7 +225,8 @@ function Shell({ children, header, footer, version }) {
             (disable with <code>--no-update-check</code>).
           </div>
           <div className="reading">
-            reading: {footer.claudeDir} · {num(footer.fileCount || 0)} session file{footer.fileCount === 1 ? '' : 's'} found
+            reading: {footer.claudeDir} · {num((footer.fileCount || 0) - (footer.codexFileCount || 0))} session file{footer.fileCount === 1 ? '' : 's'}
+            {footer.hasCodex ? <> &nbsp;+&nbsp; {footer.codexDir} · {num(footer.codexFileCount)} codex file{footer.codexFileCount === 1 ? '' : 's'}</> : null}
           </div>
         </footer>
       )}

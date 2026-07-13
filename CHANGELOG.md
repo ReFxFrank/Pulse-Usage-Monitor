@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.0
+
+- **OpenAI Codex support:** Pulse now ingests Codex CLI session logs
+  (`~/.codex/sessions`, override with `CODEX_DIR`) automatically — `gpt-*` model
+  rows, a `codex` source, session titles, per-turn reasoning-effort chips, and
+  costs at OpenAI list prices with the cached-input discount. Rollout parsing
+  was validated against real files written by codex 0.144.3, replay-safe
+  deduplication included. The Current-5h-block tile remains Claude-only (Codex
+  has separate limit windows). ChatGPT web/mobile writes no local logs and is
+  out of scope.
+
 ## v1.1.2
 
 - **Docs:** professionalized README — logo, badges, demo screenshots (generated from
