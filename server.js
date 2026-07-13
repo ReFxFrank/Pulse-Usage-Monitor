@@ -96,6 +96,15 @@ function localDateStr(ts) {
 // honouring any time-limited introductory price.
 function priceFor(model, ts) {
   let p = PRICING[model];
+  if (!p && model) {
+    // Dated / suffixed variants (e.g. claude-haiku-4-5-20251001) price as their
+    // base model: longest PRICING key that prefixes the model string wins.
+    let best = '';
+    for (const key of Object.keys(PRICING)) {
+      if (key !== '__default__' && model.startsWith(key) && key.length > best.length) best = key;
+    }
+    if (best) p = PRICING[best];
+  }
   if (!p) {
     logUnknownModel(model);
     p = PRICING.__default__;
