@@ -1424,7 +1424,9 @@ function fetchUrl(u, opts, cb) {
 }
 
 function platformAssetName() {
-  return process.platform === 'win32' ? 'pulse.exe' : 'pulse-linux';
+  if (process.platform === 'win32') return 'pulse.exe';
+  if (process.platform === 'darwin') return 'pulse-macos';
+  return 'pulse-linux';
 }
 
 function checkForUpdate(done) {

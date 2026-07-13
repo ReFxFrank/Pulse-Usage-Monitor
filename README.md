@@ -11,7 +11,7 @@ which sessions ran at which reasoning effort — all from the logs already on yo
 [![Release](https://img.shields.io/github/v/release/ReFxFrank/claudeusage?color=8f7ff5&label=release)](https://github.com/ReFxFrank/claudeusage/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/ReFxFrank/claudeusage/total?color=8f7ff5&label=downloads)](https://github.com/ReFxFrank/claudeusage/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22b892.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-4a9bf5)](https://github.com/ReFxFrank/claudeusage/releases/latest)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-4a9bf5)](https://github.com/ReFxFrank/claudeusage/releases/latest)
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-0-e0a132)](package.json)
 
   <img src=".github/assets/hero.png" alt="Pulse dashboard" width="920" />
@@ -58,6 +58,11 @@ Grab the latest single-file executable from
 | --- | --- |
 | **Windows** | Download `pulse.exe`, put it in a permanent folder, double-click. Pulse starts in the background and opens `http://localhost:4747`. SmartScreen may warn (unsigned binary): **More info → Run anyway**. |
 | **Linux** | `chmod +x pulse-linux && ./pulse-linux` |
+| **macOS** (Apple Silicon) | `chmod +x pulse-macos && xattr -d com.apple.quarantine pulse-macos; ./pulse-macos` (the `xattr` clears Gatekeeper's quarantine on the unsigned binary) |
+
+Paths are resolved per-user at runtime — `~/.claude` (or `CLAUDE_CONFIG_DIR` if
+Claude Code was relocated) and `~/.codex` (or `CODEX_HOME`) of whoever runs it.
+Nothing to configure.
 
 Then, optionally, on Windows:
 

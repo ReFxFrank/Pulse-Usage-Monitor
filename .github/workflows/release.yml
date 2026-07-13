@@ -26,6 +26,8 @@ jobs:
             artifact: pulse.exe
           - os: ubuntu-latest
             artifact: pulse-linux
+          - os: macos-latest
+            artifact: pulse-macos
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +70,7 @@ jobs:
           files: |
             dist/pulse.exe
             dist/pulse-linux
+            dist/pulse-macos
           generate_release_notes: true
           body: |
             **Pulse** — a local Claude Code usage dashboard.
@@ -78,6 +81,8 @@ jobs:
               in the dashboard's **Server panel**. SmartScreen may warn because the binary is
               unsigned: click **More info → Run anyway**.
             - **Linux:** `pulse-linux` — `chmod +x pulse-linux && ./pulse-linux`
+            - **macOS (Apple Silicon):** `pulse-macos` — `chmod +x pulse-macos && xattr -d com.apple.quarantine pulse-macos; ./pulse-macos`
+              (the `xattr` clears Gatekeeper's quarantine on the unsigned binary)
 
             From v1.1.0 Pulse can update itself: when a new release is out, the header shows an
             update pill and the Server panel installs it in one click (sha256-verified).

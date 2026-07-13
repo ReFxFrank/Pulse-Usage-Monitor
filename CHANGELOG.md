@@ -2,6 +2,9 @@
 
 ## v1.2.0
 
+- **macOS binary:** releases now include `pulse-macos` (Apple Silicon), and the
+  self-updater fetches the right asset per platform. Paths resolve per-user at
+  runtime on every OS (`~/.claude` / `CLAUDE_CONFIG_DIR`, `~/.codex` / `CODEX_HOME`).
 - **OpenAI Codex support:** Pulse now ingests Codex CLI session logs
   (`~/.codex/sessions`, override with `CODEX_DIR`) automatically — `gpt-*` model
   rows, a `codex` source, session titles, per-turn reasoning-effort chips, and
