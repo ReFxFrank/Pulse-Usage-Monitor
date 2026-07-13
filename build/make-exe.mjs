@@ -35,6 +35,16 @@ if (major < 20) die(`Node >= 20 required for SEA assets (running ${process.versi
 if (!fs.existsSync(path.join(webDist, 'index.html'))) {
   die('web/dist not built. Run `npm run build` first.');
 }
+// The self-updater compares PULSE_VERSION against release tags — a drift
+// between package.json and server.js would ship a binary that mis-reports
+// itself, so fail the build loudly.
+{
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  const m = /const PULSE_VERSION = '([^']+)'/.exec(fs.readFileSync(path.join(root, 'server.js'), 'utf8'));
+  if (!m) die('PULSE_VERSION constant not found in server.js');
+  if (m[1] !== pkgVersion) die(`version drift: package.json ${pkgVersion} != server.js PULSE_VERSION ${m[1]}`);
+  log(`version ${pkgVersion} (package.json == server.js)`);
+}
 
 // 1. collect frontend assets
 const assets = {};

@@ -5,6 +5,7 @@ import { SpendChart, Sparkline } from './charts.jsx';
 import {
   Card, CurrentBlock, BurnRate, Rollup, BarList, SessionsTable, PeriodSelect, Legend, InfoTip,
 } from './panels.jsx';
+import { ServerPanel } from './server-panel.jsx';
 
 export default function App() {
   const { data, error, loading } = useSummary();
@@ -38,8 +39,12 @@ export default function App() {
 
   return (
     <Shell
+      version={data.version}
       header={
         <div className="hmeta">
+          {data.update?.status === 'available' && (
+            <a className="updpill" href="#server">v{data.update.latest} available ↓</a>
+          )}
           <div>updated <b>{clockTime(data.generatedAt)}</b> · refreshes every 10s</div>
           <div>
             {latest
@@ -154,11 +159,13 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey }) {
         <h2>Recent sessions</h2>
         <SessionsTable sessions={data.recentSessions} />
       </Card>
+
+      <ServerPanel data={data} delay={0.36} />
     </>
   );
 }
 
-function Shell({ children, header, footer }) {
+function Shell({ children, header, footer, version }) {
   return (
     <div className="wrap">
       <motion.header className="hdr" initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
@@ -170,7 +177,7 @@ function Shell({ children, header, footer }) {
           </div>
           <div>
             <h1>Pulse</h1>
-            <div className="tag"><span className="dot" />Claude Code usage · live</div>
+            <div className="tag"><span className="dot" />Claude Code usage · live{version ? <span className="ver">v{version}</span> : null}</div>
           </div>
         </div>
         {header}
@@ -182,8 +189,9 @@ function Shell({ children, header, footer }) {
         <footer>
           <div className="disc">
             Costs are <b>estimates</b> at Claude API list prices — on a Pro/Max subscription they express
-            relative usage, not a bill. Pulse runs entirely on your machine, reads <code>~/.claude</code> read-only,
-            and makes no network calls.
+            relative usage, not a bill. Pulse runs entirely on your machine and reads <code>~/.claude</code> read-only.
+            Its only network call is a GitHub version check — usage data never leaves this machine
+            (disable with <code>--no-update-check</code>).
           </div>
           <div className="reading">
             reading: {footer.claudeDir} · {num(footer.fileCount || 0)} session file{footer.fileCount === 1 ? '' : 's'} found

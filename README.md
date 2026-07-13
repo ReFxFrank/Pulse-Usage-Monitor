@@ -32,10 +32,22 @@ Grab the latest single-file executable from
 **[Releases](https://github.com/refxfrank/claudeusage/releases)** — no Node, no
 install:
 
-- **Windows:** download `pulse.exe` and double-click it — the dashboard opens at
+- **Windows:** download `pulse.exe` and double-click it — Pulse starts **in the
+  background** (no console window stays open) and the dashboard opens at
   `http://localhost:4747`. SmartScreen may warn because the binary is unsigned:
   click **More info → Run anyway**.
 - **Linux:** `chmod +x pulse-linux && ./pulse-linux`
+
+Everything you'd use a console for lives in the dashboard's **Server panel**:
+live server logs, a **Stop** button, version/uptime, and one-click **updates**.
+Double-clicking a newer `pulse.exe` while an old one runs stops the old one and
+takes over automatically (v1.1.0+). Prefer a console? `pulse.exe --no-daemon`.
+
+**Updating:** Pulse checks GitHub for a newer release (the only network call it
+ever makes — just the version number, no usage data; disable with
+`--no-update-check`). When one exists, the header shows an update pill and the
+Server panel offers **Update now**: it downloads the new exe, verifies its
+sha256 digest against the GitHub API, swaps itself, and restarts.
 
 ## Run from source
 
@@ -68,6 +80,10 @@ in a tab while you work.
 | ------------------ | ------------------------------------------------------------- |
 | `--port N` / `PORT`| Listen port (default `4747`). Use if the port is taken.       |
 | `--host H` / `HOST`| Bind address (default `127.0.0.1`). `0.0.0.0` exposes it on the network — see the warning it prints; prefer an SSH tunnel. |
+| `--no-daemon`      | (Windows exe) stay in the console window instead of backgrounding. |
+| `--no-update-check`| Disable the GitHub version check — Pulse then makes zero network calls. Also: `PULSE_NO_UPDATE_CHECK=1`, or `{"updateCheck": false}` in `~/.pulse/config.json`. |
+| `--no-open`        | Don't auto-open the browser (packaged exe).                   |
+| `--version`        | Print the version and exit.                                   |
 | `--inspect-schema` | Print the record schema observed in your logs, then exit.     |
 | `CLAUDE_DIR`       | Override the `~/.claude` location for non-standard installs.  |
 | `--help`           | Usage.                                                        |
@@ -201,10 +217,17 @@ you will be charged. Verify current list prices at
 ## Privacy & local-only
 
 - Binds to `127.0.0.1` only — not reachable from the network.
-- Makes **no** outbound requests. No CDN, no fonts, no analytics, no telemetry. Works fully
-  offline.
+- The **only** outbound request Pulse ever makes is an optional version check
+  against the GitHub Releases API (and, if you click *Update now*, the download
+  of the new binary — verified against its GitHub sha256 digest). **No usage
+  data ever leaves your machine.** Disable with `--no-update-check` for zero
+  network calls; everything else works fully offline. No CDN, no fonts, no
+  analytics, no telemetry.
 - Reads `~/.claude` **read-only**. Pulse never writes, moves, or deletes anything under that
-  tree.
+  tree. Pulse's own files (config, logs, effort sidecar) live in `~/.pulse`.
+- Endpoints with side effects (stop, update) only accept requests from the
+  local machine, with a custom-header check that blocks cross-site requests
+  from web pages you visit.
 
 ## Files
 
@@ -221,5 +244,8 @@ you will be charged. Verify current list prices at
 ## API
 
 - `GET /` → the dashboard.
-- `GET /api/summary` → the full JSON payload (all aggregations).
-- `GET /api/health` → `{ "ok": true }`.
+- `GET /api/summary` → the full JSON payload (all aggregations + server/update state).
+- `GET /api/health` → `{ "ok": true, "version": "…", "pid": … }`.
+- `GET /api/logs` → recent server log lines (the Server panel's log view).
+- `POST /api/shutdown` → stop the server. Local-only, requires the `X-Pulse: 1` header.
+- `POST /api/update/check` / `POST /api/update/install` → update flow. Same guards.

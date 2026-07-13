@@ -108,6 +108,37 @@ export function useSummary(intervalMs = 10000) {
   return state;
 }
 
+// POST to a Pulse mutation endpoint. The X-Pulse header is required by the
+// server's cross-site guard (it forces a CORS preflight for foreign origins).
+export async function postJson(path) {
+  const r = await fetch(path, { method: 'POST', headers: { 'X-Pulse': '1' } });
+  let body = null;
+  try { body = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((body && body.error) || 'HTTP ' + r.status);
+  return body || {};
+}
+
+// Poll /api/logs on the same cadence as the summary.
+export function useLogs(enabled, intervalMs = 10000) {
+  const [lines, setLines] = useState([]);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    async function refresh() {
+      try {
+        const r = await fetch('/api/logs', { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (alive && j && Array.isArray(j.lines)) setLines(j.lines);
+      } catch (_) { /* server gone — summary hook surfaces it */ }
+    }
+    refresh();
+    const id = setInterval(refresh, intervalMs);
+    return () => { alive = false; clearInterval(id); };
+  }, [enabled, intervalMs]);
+  return lines;
+}
+
 // Re-render helper that ticks every second (for live countdowns / relative time).
 export function useTick(ms = 1000) {
   const [, set] = useState(0);

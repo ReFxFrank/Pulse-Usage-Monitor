@@ -11,7 +11,9 @@
  * HARD RULE: this tool only ever READS from ~/.claude. It never writes,
  * moves, or deletes anything under that tree.
  *
- * Node >= 18 built-ins only. No dependencies, no network calls, no telemetry.
+ * Node >= 18 built-ins only. No dependencies, no telemetry. The ONLY network
+ * call Pulse ever makes is an optional GitHub version check (see UPDATES;
+ * disable with --no-update-check) — usage data never leaves the machine.
  */
 
 const fs = require('fs');
@@ -19,6 +21,65 @@ const http = require('http');
 const path = require('path');
 const os = require('os');
 const url = require('url');
+const crypto = require('crypto');
+
+// Version — keep in sync with package.json (build/make-exe.mjs enforces this).
+const PULSE_VERSION = '1.1.0';
+const SERVER_START = Date.now();
+let IS_DAEMON_CHILD = false; // set when running as the hidden background child
+
+// ---------------------------------------------------------------------------
+// LOGGING
+// Everything logged via console.* is mirrored into a ring buffer — served at
+// /api/logs for the dashboard's Server panel — and, when running as a hidden
+// background process, appended to ~/.pulse/pulse.log.
+// ---------------------------------------------------------------------------
+const LOG_RING_MAX = 400;
+const logRing = [];
+let logFileStream = null;
+
+function pushLogLine(level, args) {
+  let text;
+  try {
+    text = args.map((a) => (typeof a === 'string' ? a : (a && a.stack) || String(a))).join(' ');
+  } catch (_) { text = '[unprintable]'; }
+  logRing.push({ ts: Date.now(), level, text });
+  if (logRing.length > LOG_RING_MAX) logRing.splice(0, logRing.length - LOG_RING_MAX);
+  if (logFileStream) {
+    try { logFileStream.write(new Date().toISOString() + ' ' + level.toUpperCase().padEnd(5) + ' ' + text + '\n'); } catch (_) {}
+  }
+}
+
+{
+  const origLog = console.log.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origErr = console.error.bind(console);
+  console.log = (...a) => { pushLogLine('info', a); try { origLog(...a); } catch (_) {} };
+  console.warn = (...a) => { pushLogLine('warn', a); try { origWarn(...a); } catch (_) {} };
+  console.error = (...a) => { pushLogLine('error', a); try { origErr(...a); } catch (_) {} };
+}
+
+// ~/.pulse — the ONLY place Pulse ever writes (sidecar log, config, logs).
+function pulseHome() {
+  return process.env.PULSE_HOME || path.join(os.homedir(), '.pulse');
+}
+
+function configFilePath() { return path.join(pulseHome(), 'config.json'); }
+function readConfig() {
+  try { return JSON.parse(fs.readFileSync(configFilePath(), 'utf8')) || {}; } catch (_) { return {}; }
+}
+
+function openLogFile() {
+  try {
+    fs.mkdirSync(pulseHome(), { recursive: true });
+    const p = path.join(pulseHome(), 'pulse.log');
+    try { // simple 2MB rotation
+      const st = fs.statSync(p);
+      if (st.size > 2 * 1024 * 1024) { try { fs.unlinkSync(p + '.1'); } catch (_) {} fs.renameSync(p, p + '.1'); }
+    } catch (_) {}
+    logFileStream = fs.createWriteStream(p, { flags: 'a' });
+  } catch (_) {}
+}
 
 // ---------------------------------------------------------------------------
 // §5  COST MODEL  — the first of two areas that must be exactly right.
@@ -501,7 +562,7 @@ function parseAll() {
 // ---------------------------------------------------------------------------
 
 function modesFilePath() {
-  return process.env.PULSE_MODES_FILE || path.join(os.homedir(), '.pulse', 'modes.jsonl');
+  return process.env.PULSE_MODES_FILE || path.join(pulseHome(), 'modes.jsonl');
 }
 
 let modesCache = { mtimeMs: -1, bySession: {} };
@@ -1044,6 +1105,13 @@ function buildSummary() {
   // Claude Code under WSL while Pulse runs in native Windows) is diagnosable.
   payload.claudeDir = claudeDir();
   payload.fileCount = fileCount;
+  // Server panel: identity + update state.
+  payload.version = PULSE_VERSION;
+  payload.serverStartTs = SERVER_START;
+  payload.pid = process.pid;
+  payload.daemon = IS_DAEMON_CHILD;
+  payload.packaged = !!seaApi;
+  payload.update = updateState;
   return payload;
 }
 
@@ -1063,6 +1131,212 @@ try {
 function seaAsset(key) {
   if (!seaApi) return null;
   try { return Buffer.from(seaApi.getRawAsset(key)); } catch (_) { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// UPDATES
+// The ONLY network calls Pulse ever makes, and only when enabled (default on;
+// --no-update-check / PULSE_NO_UPDATE_CHECK / {"updateCheck":false} in
+// ~/.pulse/config.json disable it):
+//   - check: GET the GitHub Releases API for the latest version tag
+//   - install (packaged builds, user-clicked): download the platform asset,
+//     verify its sha256 digest from the API, swap executables via rename
+//     (a running exe can be renamed, just not deleted), relaunch, exit.
+// Any failure leaves the current install untouched and points at the
+// releases page instead. No usage data is ever transmitted.
+// ---------------------------------------------------------------------------
+const UPDATE_REPO = 'ReFxFrank/claudeusage';
+const RELEASES_PAGE = 'https://github.com/' + UPDATE_REPO + '/releases';
+const UPDATE_API_URL = process.env.PULSE_UPDATE_API ||
+  'https://api.github.com/repos/' + UPDATE_REPO + '/releases/latest';
+
+const updateState = {
+  status: 'idle', // idle | checking | uptodate | available | downloading | installing | error
+  current: PULSE_VERSION,
+  latest: null,
+  error: null,
+  checkedAt: null,
+  installSupported: false, // packaged build with a downloadable asset
+  releasesUrl: RELEASES_PAGE,
+};
+let updateAsset = null; // { url, digest, size, name } for this platform
+
+function versionNum(v) {
+  const p = String(v || '').replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0);
+  return (p[0] || 0) * 1e6 + (p[1] || 0) * 1e3 + (p[2] || 0);
+}
+
+// Minimal GET with redirect-following (release assets 302 to a CDN). http is
+// accepted only for the PULSE_UPDATE_API test override; production URLs are
+// https.
+function fetchUrl(u, opts, cb) {
+  const { asStream = false, timeoutMs = 20000, redirects = 5 } = opts || {};
+  let mod;
+  try { mod = u.startsWith('https:') ? require('https') : http; } catch (e) { return cb(e); }
+  const req = mod.get(u, {
+    headers: {
+      'User-Agent': 'pulse-usage-dashboard/' + PULSE_VERSION,
+      'Accept': 'application/vnd.github+json, application/octet-stream, */*',
+    },
+    timeout: timeoutMs,
+  }, (res) => {
+    const sc = res.statusCode || 0;
+    if (sc >= 300 && sc < 400 && res.headers.location && redirects > 0) {
+      res.resume();
+      let next;
+      try { next = new URL(res.headers.location, u).toString(); } catch (e) { return cb(e); }
+      return fetchUrl(next, { asStream, timeoutMs, redirects: redirects - 1 }, cb);
+    }
+    if (sc !== 200) { res.resume(); return cb(new Error('HTTP ' + sc)); }
+    if (asStream) return cb(null, res);
+    let body = '';
+    res.setEncoding('utf8');
+    res.on('data', (d) => { body += d; if (body.length > 4e6) req.destroy(new Error('response too large')); });
+    res.on('end', () => cb(null, body));
+    res.on('error', (e) => cb(e));
+  });
+  req.on('timeout', () => req.destroy(new Error('timed out')));
+  req.on('error', (e) => cb(e));
+}
+
+function platformAssetName() {
+  return process.platform === 'win32' ? 'pulse.exe' : 'pulse-linux';
+}
+
+function checkForUpdate(done) {
+  if (['checking', 'downloading', 'installing'].includes(updateState.status)) {
+    return done && done(updateState);
+  }
+  updateState.status = 'checking';
+  updateState.error = null;
+  fetchUrl(UPDATE_API_URL, {}, (err, body) => {
+    updateState.checkedAt = Date.now();
+    if (err) {
+      updateState.status = 'error';
+      updateState.error = 'update check failed: ' + err.message;
+      console.warn('[pulse] ' + updateState.error);
+      return done && done(updateState);
+    }
+    let rel = null;
+    try { rel = JSON.parse(body); } catch (_) {}
+    const tag = rel && (rel.tag_name || rel.name);
+    if (!tag) {
+      updateState.status = 'error';
+      updateState.error = 'update check failed: unexpected API response';
+      return done && done(updateState);
+    }
+    updateState.latest = String(tag).replace(/^v/i, '');
+    const want = platformAssetName();
+    const a = (Array.isArray(rel.assets) ? rel.assets : []).find((x) => x && x.name === want);
+    updateAsset = a ? {
+      url: a.browser_download_url || a.url,
+      digest: typeof a.digest === 'string' ? a.digest.replace(/^sha256:/, '') : null,
+      size: a.size || 0,
+      name: a.name,
+    } : null;
+    if (versionNum(updateState.latest) > versionNum(PULSE_VERSION)) {
+      updateState.status = 'available';
+      updateState.installSupported = !!(seaApi && updateAsset && updateAsset.url);
+      console.log(`[pulse] update available: v${updateState.latest} (running v${PULSE_VERSION}) — ${RELEASES_PAGE}`);
+    } else {
+      updateState.status = 'uptodate';
+      console.log(`[pulse] up to date (v${PULSE_VERSION})`);
+    }
+    done && done(updateState);
+  });
+}
+
+function installUpdate(done) {
+  if (updateState.status !== 'available') return done && done(new Error('no update staged — run a check first'));
+  if (!seaApi) return done && done(new Error('running from source — update with git pull'));
+  if (!updateAsset || !updateAsset.url) return done && done(new Error('no downloadable asset for this platform'));
+
+  const exePath = process.execPath;
+  const downloadPath = exePath + '.download';
+  const oldPath = exePath + '.old';
+  updateState.status = 'downloading';
+  updateState.error = null;
+  console.log(`[pulse] downloading v${updateState.latest} (${updateAsset.name})…`);
+
+  fetchUrl(updateAsset.url, { asStream: true, timeoutMs: 300000 }, (err, res) => {
+    if (err) return failInstall('download failed: ' + err.message, done);
+    let out;
+    try { out = fs.createWriteStream(downloadPath); } catch (e) {
+      return failInstall('cannot write next to the exe: ' + e.message, done);
+    }
+    const hash = crypto.createHash('sha256');
+    let bytes = 0;
+    res.on('data', (d) => { hash.update(d); bytes += d.length; });
+    res.on('error', (e) => { try { out.destroy(); } catch (_) {} failInstall('download failed: ' + e.message, done); });
+    out.on('error', (e) => failInstall('write failed: ' + e.message, done));
+    res.pipe(out);
+    out.on('finish', () => {
+      try {
+        const digest = hash.digest('hex');
+        if (bytes < 5 * 1024 * 1024) return failInstall(`download too small (${bytes} bytes)`, done);
+        if (updateAsset.digest && digest !== updateAsset.digest) {
+          return failInstall('sha256 mismatch — refusing to install', done);
+        }
+        updateState.status = 'installing';
+        console.log(`[pulse] verified download (${(bytes / 1048576).toFixed(1)} MB, sha256 ok) — swapping executables`);
+        try { fs.unlinkSync(oldPath); } catch (_) {}
+        fs.renameSync(exePath, oldPath);
+        try {
+          fs.renameSync(downloadPath, exePath);
+        } catch (e) {
+          try { fs.renameSync(oldPath, exePath); } catch (_) {} // roll back
+          throw e;
+        }
+        if (process.platform !== 'win32') { try { fs.chmodSync(exePath, 0o755); } catch (_) {} }
+        done && done(null); // answer the HTTP request before the process exits
+        if (process.env.PULSE_UPDATE_NO_RELAUNCH) {
+          console.log('[pulse] PULSE_UPDATE_NO_RELAUNCH set — staying on the old process');
+          return;
+        }
+        relaunchAfterUpdate(exePath);
+      } catch (e) {
+        try { fs.unlinkSync(downloadPath); } catch (_) {}
+        failInstall('swap failed: ' + ((e && e.message) || e), done);
+      }
+    });
+  });
+}
+
+function failInstall(msg, done) {
+  updateState.status = 'error';
+  updateState.error = msg + ' — download manually: ' + RELEASES_PAGE;
+  console.error('[pulse] ' + updateState.error);
+  try { fs.unlinkSync(process.execPath + '.download'); } catch (_) {}
+  done && done(new Error(msg));
+}
+
+function relaunchAfterUpdate(exePath) {
+  const passthrough = process.argv.slice(2).filter((a) => a !== '--after-update');
+  if (process.platform === 'win32' && !passthrough.includes('--daemon-child')) passthrough.push('--daemon-child');
+  console.log(`[pulse] restarting as v${updateState.latest}…`);
+  setTimeout(() => {
+    try {
+      const child = require('child_process').spawn(exePath, [...passthrough, '--after-update'],
+        { detached: true, stdio: 'ignore', windowsHide: true });
+      child.unref();
+    } catch (e) {
+      console.error('[pulse] relaunch failed: ' + e.message + ' — start the new version manually.');
+    }
+    setTimeout(() => process.exit(0), 400);
+  }, 300);
+}
+
+// After an update the previous exe sits renamed aside — remove it once it is
+// no longer locked (called at startup; failures are retried on the next run).
+function cleanupOldExecutable() {
+  if (!seaApi) return;
+  const oldPath = process.execPath + '.old';
+  try {
+    if (fs.existsSync(oldPath)) {
+      fs.unlinkSync(oldPath);
+      console.log('[pulse] removed previous version (' + path.basename(oldPath) + ')');
+    }
+  } catch (_) { /* still locked — next start */ }
 }
 
 // The built React frontend (Vite output). Served as static files; the server
@@ -1128,6 +1402,83 @@ function serveStatic(route, res) {
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
+// Guard for endpoints with side effects (stop, update). Any web page can fire
+// simple POSTs at localhost, so require a custom header — that forces a CORS
+// preflight no cross-origin page ever passes (we send no CORS headers) — plus
+// a loopback source address and a localhost Host header (DNS-rebinding guard).
+function allowMutation(req, res) {
+  const ra = req.socket.remoteAddress || '';
+  const isLoop = ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
+  const hostHdr = String(req.headers.host || '')
+    .replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (req.method === 'POST' && isLoop && LOOPBACK_HOSTS.has(hostHdr) && req.headers['x-pulse'] === '1') {
+    return true;
+  }
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'forbidden' }));
+  return false;
+}
+
+// Probe whether a running instance answers /api/health on the port.
+// cb receives { kind: 'pulse', version } | { kind: 'other' } | { kind: 'free' }.
+function probeInstance(port, cb) {
+  const req = http.get({ host: '127.0.0.1', port, path: '/api/health', timeout: 1500 }, (res) => {
+    let body = '';
+    res.on('data', (d) => { body += d; if (body.length > 65536) req.destroy(); });
+    res.on('end', () => {
+      try {
+        const j = JSON.parse(body);
+        if (j && j.ok) return cb({ kind: 'pulse', version: j.version || null });
+      } catch (_) {}
+      cb({ kind: 'other' });
+    });
+    res.on('error', () => cb({ kind: 'other' }));
+  });
+  req.on('timeout', () => { req.destroy(); cb({ kind: 'other' }); });
+  req.on('error', (e) => cb(e && e.code === 'ECONNREFUSED' ? { kind: 'free' } : { kind: 'other' }));
+}
+
+// Port taken — say WHO has it. The classic upgrade trap is double-clicking a
+// new pulse.exe while the old one still runs; name that case explicitly.
+function diagnosePortConflict(port) {
+  probeInstance(port, (inst) => {
+    if (inst.kind === 'pulse') {
+      const v = inst.version ? 'v' + inst.version : 'an older version (v1.0.3 or earlier)';
+      console.error(`\n[pulse] Another Pulse — ${v} — is already running on port ${port}.`);
+      if (inst.version === PULSE_VERSION) {
+        console.error(`[pulse] The dashboard is already available: http://localhost:${port}`);
+      } else {
+        console.error(`[pulse] This is v${PULSE_VERSION}. Stop the old one first — from its dashboard`);
+        console.error('[pulse] (Server panel → Stop), its console window, or Task Manager →');
+        console.error('[pulse] pulse.exe → End task — then run this again.');
+      }
+    } else {
+      console.error(`\n[pulse] Port ${port} is already in use by another program.`);
+      console.error('[pulse] Try: --port 4748   (or set PORT=)');
+    }
+    holdOpenAndExit(1);
+  });
+}
+
+// A double-clicked exe's console closes with the process — pause so the
+// message is actually readable. No-op when piped, scripted, or headless.
+function holdOpenAndExit(code) {
+  if (seaApi && process.platform === 'win32' && process.stdin.isTTY && !IS_DAEMON_CHILD) {
+    console.error('\nPress Enter to close…');
+    try {
+      process.stdin.resume();
+      process.stdin.once('data', () => process.exit(code));
+      return;
+    } catch (_) {}
+  }
+  process.exit(code);
+}
+
+function openBrowser(port) {
+  if (process.platform !== 'win32') return;
+  try { require('child_process').exec(`start "" "http://localhost:${port}"`); } catch (_) {}
+}
+
 function startServer(port, host, opts) {
   const server = http.createServer((req, res) => {
     const parsed = url.parse(req.url);
@@ -1136,7 +1487,7 @@ function startServer(port, host, opts) {
     try {
       if (route === '/api/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(JSON.stringify({ ok: true, version: PULSE_VERSION, pid: process.pid }));
         return;
       }
       if (route === '/api/summary') {
@@ -1146,6 +1497,40 @@ function startServer(port, host, opts) {
         console.log(`[pulse] /api/summary built in ${payload.buildMs}ms`);
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(payload));
+        return;
+      }
+      if (route === '/api/logs') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ lines: logRing }));
+        return;
+      }
+      if (route === '/api/shutdown') {
+        if (!allowMutation(req, res)) return;
+        console.log('[pulse] stop requested — shutting down');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, stopping: true }));
+        setTimeout(() => {
+          try { server.close(() => process.exit(0)); } catch (_) {}
+          setTimeout(() => process.exit(0), 1000);
+        }, 200);
+        return;
+      }
+      if (route === '/api/update/check') {
+        if (!allowMutation(req, res)) return;
+        checkForUpdate((st) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(st));
+        });
+        return;
+      }
+      if (route === '/api/update/install') {
+        if (!allowMutation(req, res)) return;
+        installUpdate((err) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(err
+            ? { ok: false, error: err.message, state: updateState }
+            : { ok: true, state: updateState }));
+        });
         return;
       }
       // Everything else: the built frontend (SPA).
@@ -1161,10 +1546,17 @@ function startServer(port, host, opts) {
     }
   });
 
+  // After an update (or when replacing an older instance) the old process may
+  // hold the port for a moment — retry briefly instead of giving up.
+  const retryBindUntil = (opts && opts.retryBindUntil) || 0;
   server.on('error', (err) => {
     if (err && err.code === 'EADDRINUSE') {
-      console.error(`[pulse] port ${port} is already in use. Try: node server.js --port <other>  (or set PORT=)`);
-      process.exit(1);
+      if (Date.now() < retryBindUntil) {
+        setTimeout(() => { try { server.listen(port, host); } catch (_) {} }, 400);
+        return;
+      }
+      diagnosePortConflict(port);
+      return;
     }
     throw err;
   });
@@ -1172,14 +1564,12 @@ function startServer(port, host, opts) {
   // Local-only by default: bind to loopback (§2). A non-loopback host is an
   // explicit opt-in (--host / HOST) for VPS/LAN use and is warned about.
   server.listen(port, host, () => {
-    console.log(`\n  Pulse — Claude Code usage dashboard`);
+    console.log(`\n  Pulse v${PULSE_VERSION} — Claude Code usage dashboard`);
     console.log(`  reading (read-only): ${claudeDir()}`);
-    console.log(`  listening: http://${host}:${port}`);
-    // Packaged exe double-clicked on Windows: open the dashboard for the user.
+    console.log(`  listening: http://${host}:${port}${IS_DAEMON_CHILD ? '  (background)' : ''}`);
+    // Packaged exe on Windows: open the dashboard for the user.
     if (seaApi && process.platform === 'win32' && (!opts || opts.open !== false) && LOOPBACK_HOSTS.has(host)) {
-      try {
-        require('child_process').exec(`start "" "http://localhost:${port}"`);
-      } catch (_) {}
+      openBrowser(port);
     }
     if (LOOPBACK_HOSTS.has(host)) {
       console.log(`  open: http://localhost:${port}\n`);
@@ -1190,8 +1580,109 @@ function startServer(port, host, opts) {
       console.log('     titles, costs). Prefer 127.0.0.1 + an SSH tunnel, or put a');
       console.log('     firewall / authenticating reverse proxy in front of it.\n');
     }
+    cleanupOldExecutable();
+    if (opts && opts.updateCheck) {
+      setTimeout(() => checkForUpdate(), 2500);
+      const iv = setInterval(() => checkForUpdate(), 24 * 3600 * 1000);
+      if (iv.unref) iv.unref();
+    }
   });
   return server;
+}
+
+// ---------------------------------------------------------------------------
+// BACKGROUND MODE (Windows packaged exe)
+// Double-clicking pulse.exe should not leave a console window around: the
+// visible parent preflights the port (so conflicts are readable — including
+// auto-replacing an older running Pulse), then hands off to a hidden child
+// (--daemon-child) that logs to ~/.pulse/pulse.log and is controlled from the
+// dashboard's Server panel. --no-daemon keeps it in the console.
+// ---------------------------------------------------------------------------
+function shouldDaemonize(args) {
+  return !!(seaApi && process.platform === 'win32' && !args.daemonChild && !args.noDaemon);
+}
+
+function daemonize(args, port, host) {
+  probeInstance(port, (inst) => {
+    if (inst.kind === 'pulse' && inst.version === PULSE_VERSION) {
+      console.log(`[pulse] v${PULSE_VERSION} is already running — opening the dashboard.`);
+      openBrowser(port);
+      setTimeout(() => process.exit(0), 1200);
+      return;
+    }
+    if (inst.kind === 'pulse') {
+      // A different Pulse version holds the port. v1.1.0+ accepts a local stop
+      // request; anything older must be closed by hand.
+      console.log(`[pulse] replacing running Pulse ${inst.version ? 'v' + inst.version : '(pre-1.1.0)'}…`);
+      requestShutdown(port, (ok) => {
+        if (!ok) {
+          console.error('\n[pulse] The running Pulse is too old to stop automatically.');
+          console.error('[pulse] Close it (Task Manager → pulse.exe → End task), then run this again.');
+          holdOpenAndExit(1);
+          return;
+        }
+        waitForPortFree(port, 8000, (free) => {
+          if (!free) {
+            console.error('[pulse] The old instance did not exit — close it manually and retry.');
+            holdOpenAndExit(1);
+            return;
+          }
+          spawnDaemon(args, port, host);
+        });
+      });
+      return;
+    }
+    if (inst.kind === 'other') {
+      console.error(`\n[pulse] Port ${port} is already in use by another program.`);
+      console.error('[pulse] Try: pulse.exe --port 4748');
+      holdOpenAndExit(1);
+      return;
+    }
+    spawnDaemon(args, port, host);
+  });
+}
+
+function requestShutdown(port, cb) {
+  const req = http.request({
+    host: '127.0.0.1', port, path: '/api/shutdown', method: 'POST',
+    headers: { 'X-Pulse': '1', 'Host': 'localhost' }, timeout: 2500,
+  }, (res) => {
+    res.resume();
+    cb(res.statusCode === 200);
+  });
+  req.on('error', () => cb(false));
+  req.on('timeout', () => { req.destroy(); cb(false); });
+  req.end();
+}
+
+function waitForPortFree(port, ms, cb) {
+  const deadline = Date.now() + ms;
+  (function poll() {
+    probeInstance(port, (inst) => {
+      if (inst.kind === 'free') return cb(true);
+      if (Date.now() > deadline) return cb(false);
+      setTimeout(poll, 350);
+    });
+  })();
+}
+
+function spawnDaemon(args, port, host) {
+  const passthrough = process.argv.slice(2).filter((a) => a !== '--no-daemon');
+  try {
+    const child = require('child_process').spawn(process.execPath, [...passthrough, '--daemon-child'],
+      { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+  } catch (e) {
+    console.error('[pulse] failed to start the background process: ' + e.message);
+    console.error('[pulse] falling back to running in this window.');
+    startServer(port, host, serverOpts(args));
+    return;
+  }
+  console.log(`\n  Pulse v${PULSE_VERSION} is starting in the background.`);
+  console.log(`  Dashboard: http://localhost:${port}  (opens automatically)`);
+  console.log(`  Logs, updates and Stop live in the dashboard's Server panel.`);
+  console.log('  (Run with --no-daemon to keep it in a console window.)');
+  setTimeout(() => process.exit(0), 2500);
 }
 
 // ---------------------------------------------------------------------------
@@ -1336,7 +1827,11 @@ function q(s) {
 }
 
 function parseArgs(argv) {
-  const out = { port: null, host: null, inspectSchema: false, modeHook: false, effortSetup: false, noOpen: false };
+  const out = {
+    port: null, host: null, inspectSchema: false, modeHook: false, effortSetup: false,
+    noOpen: false, noDaemon: false, daemonChild: false, afterUpdate: false,
+    noUpdateCheck: false, version: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' || a === '-p') { out.port = parseInt(argv[++i], 10); }
@@ -1347,9 +1842,28 @@ function parseArgs(argv) {
     else if (a === '--mode-hook') { out.modeHook = true; }
     else if (a === '--effort-setup') { out.effortSetup = true; }
     else if (a === '--no-open') { out.noOpen = true; }
+    else if (a === '--no-daemon') { out.noDaemon = true; }
+    else if (a === '--daemon-child') { out.daemonChild = true; }
+    else if (a === '--after-update') { out.afterUpdate = true; }
+    else if (a === '--no-update-check') { out.noUpdateCheck = true; }
+    else if (a === '--version' || a === '-v') { out.version = true; }
     else if (a === '--help' || a === '-h') { out.help = true; }
   }
   return out;
+}
+
+function updateCheckEnabled(args) {
+  if (args.noUpdateCheck || process.env.PULSE_NO_UPDATE_CHECK) return false;
+  return readConfig().updateCheck !== false;
+}
+
+function serverOpts(args) {
+  return {
+    open: !args.noOpen,
+    updateCheck: updateCheckEnabled(args),
+    // an updated/replacing instance may need a moment for the old one's port
+    retryBindUntil: (args.afterUpdate || args.daemonChild) ? Date.now() + 10000 : 0,
+  };
 }
 
 function resolvePort(args) {
@@ -1410,7 +1924,7 @@ function inspectSchema() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log('Pulse — local Claude Code usage dashboard\n');
+    console.log(`Pulse v${PULSE_VERSION} — local Claude Code usage dashboard\n`);
     console.log('Usage: node server.js [--port N] [--host H] [--inspect-schema]');
     console.log('  --port N          listen port (default 4747, or $PORT)');
     console.log('  --host H          bind address (default 127.0.0.1, or $HOST).');
@@ -1421,14 +1935,25 @@ function main() {
     console.log('  --mode-hook       (internal) run as a Claude Code hook — records the');
     console.log('                    effort level to ' + modesFilePath());
     console.log('  --no-open         do not auto-open the browser (packaged exe only)');
+    console.log('  --no-daemon       (Windows exe) keep running in this console window');
+    console.log('                    instead of backgrounding');
+    console.log('  --no-update-check disable the GitHub version check (the only network');
+    console.log('                    call Pulse makes; also: PULSE_NO_UPDATE_CHECK=1 or');
+    console.log('                    {"updateCheck":false} in ~/.pulse/config.json)');
+    console.log('  --version         print the version and exit');
     console.log('  --inspect-schema  print observed record schema and exit');
     console.log('  env CLAUDE_DIR    override ~/.claude location');
     return;
   }
+  if (args.version) { console.log('pulse v' + PULSE_VERSION); return; }
   if (args.modeHook) { runModeHook(); return; }
   if (args.effortSetup) { effortSetup(); return; }
   if (args.inspectSchema) { inspectSchema(); return; }
-  startServer(resolvePort(args), resolveHost(args), { open: !args.noOpen });
+  const port = resolvePort(args);
+  const host = resolveHost(args);
+  if (args.daemonChild) { IS_DAEMON_CHILD = true; openLogFile(); }
+  if (shouldDaemonize(args)) { daemonize(args, port, host); return; }
+  startServer(port, host, serverOpts(args));
 }
 
 if (require.main === module) main();
