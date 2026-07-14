@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.4
+
+- **Account meters survive rate limiting (HTTP 429):** the card keeps showing
+  your last good numbers with an honest age note ("showing numbers from 4m
+  ago") instead of replacing them with an error. Pulse now honors the API's
+  Retry-After header and otherwise backs off exponentially (10m doubling to
+  1h) instead of retrying every minute; base polling relaxes to once per two
+  minutes. Rate-limiting renders as a quiet note, not an alarm — and hints
+  that something else on the machine (e.g. a statusline script) may be
+  hammering the shared usage endpoint if it persists.
+
 ## v1.4.3
 
 - **macOS account meters:** Claude Code stores its login in the macOS Keychain

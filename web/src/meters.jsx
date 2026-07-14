@@ -20,10 +20,26 @@ export function MetersCard({ meters, codex, delay = 0.18 }) {
       // Normal on a Codex-only machine — informative, not alarming.
       return <div className="sub">Claude meters: {anth.error || 'no Claude Code login on this machine.'}</div>;
     }
-    if (anth.status === 'expired' || anth.status === 'error') {
-      return <div className="sub" style={{ color: 'var(--warn)' }}>{anth.error || anth.status}</div>;
+    const hasBars = anth.buckets && anth.buckets.length > 0;
+    if (anth.status === 'expired' || anth.status === 'error' || anth.status === 'rate-limited') {
+      // A throttled or failed refresh is not data loss: keep showing the last
+      // good numbers with an honest note about their age.
+      const note = anth.status === 'rate-limited'
+        ? (anth.error || 'Anthropic rate-limited the usage check — Pulse backs off and retries automatically.')
+        : (anth.error || anth.status);
+      if (hasBars) {
+        return (
+          <>
+            <MeterRows buckets={anth.buckets} />
+            <div className="sub" style={{ marginTop: 8, color: anth.status === 'rate-limited' ? 'var(--text-3)' : 'var(--warn)' }}>
+              {anth.lastGoodAt ? <>Showing numbers from <span className="mono">{ago(anth.lastGoodAt)}</span> — </> : null}{note}
+            </div>
+          </>
+        );
+      }
+      return <div className="sub" style={{ color: anth.status === 'rate-limited' ? 'var(--text-3)' : 'var(--warn)' }}>{note}</div>;
     }
-    if (!anth.buckets || !anth.buckets.length) {
+    if (!hasBars) {
       return <div className="sub">No usage buckets reported for this account.</div>;
     }
     return <MeterRows buckets={anth.buckets} />;

@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.4.3';
+const PULSE_VERSION = '1.4.4';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1545,7 +1545,13 @@ function fetchUrl(u, opts, cb) {
       try { next = new URL(res.headers.location, u).toString(); } catch (e) { return cb(e); }
       return fetchUrl(next, { asStream, timeoutMs, redirects: redirects - 1 }, cb);
     }
-    if (sc !== 200) { res.resume(); return cb(new Error('HTTP ' + sc)); }
+    if (sc !== 200) {
+      res.resume();
+      const e = new Error('HTTP ' + sc);
+      e.status = sc;
+      if (res.headers && res.headers['retry-after']) e.retryAfter = res.headers['retry-after'];
+      return cb(e);
+    }
     if (asStream) return cb(null, res);
     let body = '';
     res.setEncoding('utf8');
@@ -1751,15 +1757,24 @@ function cleanupOldExecutable() {
 // The endpoint is internal/undocumented — parse defensively, degrade quietly.
 // ---------------------------------------------------------------------------
 const METERS_API_URL = process.env.PULSE_METERS_API || 'https://api.anthropic.com/api/oauth/usage';
-const METERS_CACHE_MS = 60 * 1000;
+// Base cadence 120s; 429s back off (Retry-After honored, else 10m doubling to
+// 1h) and other errors wait 5m — the endpoint is shared with Claude Code
+// itself, so Pulse must be a polite citizen. Env override is a test hook.
+const METERS_OK_MS = parseInt(process.env.PULSE_METERS_CACHE_MS, 10) || 120 * 1000;
+const METERS_ERR_MS = Math.min(METERS_OK_MS * 2, 5 * 60 * 1000);
+const METERS_429_BASE_MS = Math.min(METERS_OK_MS * 5, 10 * 60 * 1000);
+const METERS_429_MAX_MS = 60 * 60 * 1000;
 
 const metersState = {
-  status: 'off',   // off | ok | no-login | expired | error
-  buckets: [],     // [{ key, label, pct, resetsAt }]
+  status: 'off',   // off | ok | no-login | expired | error | rate-limited
+  buckets: [],     // [{ key, label, pct, resetsAt }] — kept through errors
   fetchedAt: null,
+  lastGoodAt: null,
+  nextAttemptAt: 0,
   error: null,
 };
 let metersInFlight = false;
+let meters429Streak = 0;
 
 function metersEnabled() {
   return readConfig().accountMeters === true;
@@ -1855,9 +1870,11 @@ function refreshAccountMeters(done) {
   if (!metersEnabled()) { metersState.status = 'off'; return done && done(metersState); }
   if (metersInFlight) return done && done(metersState);
   metersInFlight = true; // guards the credential lookup too (Keychain dialogs)
+  const schedule = (ms) => { metersState.nextAttemptAt = Date.now() + ms; };
   readOauthTokenAsync((cred) => {
   if (!cred) {
     metersInFlight = false;
+    schedule(METERS_OK_MS);
     metersState.status = 'no-login';
     metersState.error = IS_MAC
       ? 'No Claude Code login found — Pulse checked ~/.claude/.credentials.json and the macOS Keychain. ' +
@@ -1882,6 +1899,30 @@ function refreshAccountMeters(done) {
     metersInFlight = false;
     metersState.fetchedAt = Date.now();
     if (err) {
+      if (err.status === 429) {
+        // Rate-limited: honor Retry-After when given, else exponential backoff.
+        // Last good buckets stay on screen — being throttled is not data loss.
+        meters429Streak++;
+        let waitMs = null;
+        const ra = err.retryAfter;
+        if (ra != null) {
+          const sec = parseInt(ra, 10);
+          if (isFinite(sec) && sec > 0) waitMs = sec * 1000;
+          else { const t = Date.parse(ra); if (isFinite(t)) waitMs = t - Date.now(); }
+        }
+        if (waitMs == null || !isFinite(waitMs) || waitMs <= 0) {
+          waitMs = Math.min(METERS_429_BASE_MS * Math.pow(2, meters429Streak - 1), METERS_429_MAX_MS);
+        }
+        waitMs = Math.max(5000, Math.min(waitMs, METERS_429_MAX_MS));
+        schedule(waitMs);
+        metersState.status = 'rate-limited';
+        metersState.error = 'Anthropic rate-limited the usage check (HTTP 429) — retrying in ~' +
+          Math.max(1, Math.round(waitMs / 60000)) + 'm. If this persists, something else on this machine ' +
+          '(e.g. a statusline script) may be polling the usage endpoint heavily.';
+        console.warn('[pulse] account meters: ' + metersState.error);
+        return done && done(metersState);
+      }
+      schedule(METERS_ERR_MS);
       metersState.status = /HTTP 401|HTTP 403/.test(err.message) ? 'expired' : 'error';
       metersState.error = metersState.status === 'expired'
         ? 'Claude rejected the login (' + err.message + ')' +
@@ -1893,9 +1934,12 @@ function refreshAccountMeters(done) {
       console.warn('[pulse] account meters: ' + metersState.error);
       return done && done(metersState);
     }
+    meters429Streak = 0;
+    schedule(METERS_OK_MS);
     let j = null;
     try { j = JSON.parse(body); } catch (_) {}
     if (!j || typeof j !== 'object') {
+      schedule(METERS_ERR_MS);
       metersState.status = 'error';
       metersState.error = 'unexpected meters response';
       return done && done(metersState);
@@ -1909,6 +1953,7 @@ function refreshAccountMeters(done) {
     buckets.sort((a, b) => (a.key === 'five_hour' ? -1 : b.key === 'five_hour' ? 1 : a.key.localeCompare(b.key)));
     metersState.buckets = buckets;
     metersState.status = 'ok';
+    metersState.lastGoodAt = Date.now();
     metersState.error = buckets.length ? null : 'no usage buckets in response';
     console.log(`[pulse] account meters refreshed (${buckets.length} bucket(s))`);
     done && done(metersState);
@@ -1919,7 +1964,7 @@ function refreshAccountMeters(done) {
 // Lazily refresh on summary builds; serve the cached state immediately.
 function metersForPayload() {
   if (!metersEnabled()) return { enabled: false };
-  if (!metersState.fetchedAt || Date.now() - metersState.fetchedAt > METERS_CACHE_MS) {
+  if (Date.now() >= (metersState.nextAttemptAt || 0)) {
     refreshAccountMeters(); // async; next 10s poll picks it up
   }
   return {
@@ -1927,6 +1972,7 @@ function metersForPayload() {
     status: metersState.status === 'off' ? 'loading' : metersState.status,
     buckets: metersState.buckets,
     fetchedAt: metersState.fetchedAt,
+    lastGoodAt: metersState.lastGoodAt,
     error: metersState.error,
   };
 }
@@ -2151,8 +2197,10 @@ function startServer(port, host, opts) {
           res.end(JSON.stringify({ ok: true, meters: { enabled: false } }));
           return;
         }
-        // Fresh credential lookup on every enable (e.g. right after logging in).
+        // Fresh credential lookup + immediate attempt on every enable.
         credCache = { at: 0, cred: null };
+        meters429Streak = 0;
+        metersState.nextAttemptAt = 0;
         // Respond after the first fetch so the card can render immediately.
         refreshAccountMeters(() => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
