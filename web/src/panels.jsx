@@ -99,9 +99,12 @@ export function CurrentBlock({ cb, delay }) {
     <Card delay={delay} className="tile">
       <div className="label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         Current 5h block
-        <InfoTip text="Claude usage only (Codex has separate limits). Reconstructed from this machine's logs: the first message after a ≥5h gap opens a 5-hour window. Claude's REAL window is opened by your first message on any surface — claude.ai, mobile, another computer — so if that happened off this machine, the actual reset can be earlier than shown here.">
+        <InfoTip text={cb.official
+          ? 'Window timing comes from Anthropic’s official account meter (the same reset as /usage) — the exact true reset, covering usage on every device. Cost/tokens shown are this machine’s Claude contribution within that window; Codex has separate limits.'
+          : 'Claude usage only (Codex has separate limits). Reconstructed from this machine’s logs: the first message after a ≥5h gap opens a 5-hour window. Claude’s REAL window is opened by your first message on any surface — claude.ai, mobile, another computer — so the actual reset can be earlier than shown. Enable account meters in the Server panel and this tile switches to the official timer automatically.'}>
           <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
         </InfoTip>
+        {cb.official && <span className="offbadge">official</span>}
       </div>
       <div className="blockrow">
         <div className="col">
@@ -120,7 +123,9 @@ export function CurrentBlock({ cb, delay }) {
           </div>
         </ProgressRing>
       </div>
-      <div className="sub" style={{ marginTop: 12 }}>{hm(cb.start)} → {hm(cb.end)}</div>
+      <div className="sub" style={{ marginTop: 12 }}>
+        {hm(cb.start)} → {hm(cb.end)}{cb.official ? ' · synced to Anthropic’s clock' : ' · reconstructed'}
+      </div>
     </Card>
   );
 }

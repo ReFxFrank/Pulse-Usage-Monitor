@@ -345,3 +345,10 @@ html.lite .rtip, html.lite .ctip { background: #14121b; }
 html.lite .brand .dot { animation: none; box-shadow: none; }
 html.lite body::after { display: none; }   /* grain overlay */
 html.lite .mtrack i, html.lite .hbar .track i { transition: none; }
+
+/* provenance badge on the 5h-block tile when synced to the official meter */
+.offbadge {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: #8fd0c2; background: rgba(34, 184, 146, 0.12); border: 1px solid rgba(34, 184, 146, 0.3);
+  border-radius: 999px; padding: 2px 8px;
+}

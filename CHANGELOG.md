@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.0
+
+- **The 5h-block tile syncs to Anthropic's official clock:** when account
+  meters are enabled and report a live five-hour reset, the Current-5h-block
+  window becomes [official reset − 5h → official reset] — the exact timer
+  from /usage, covering usage on every device — with this machine's Claude
+  cost/tokens scoped to that true window. A green "official" badge and a
+  "synced to Anthropic's clock" footer mark the provenance; with meters off
+  (or a stale reset) the tile falls back to the log-based reconstruction,
+  labeled "reconstructed". The official reset keeps working during
+  rate-limit backoffs — it's an absolute timestamp, not a countdown.
+
 ## v1.4.4
 
 - **Account meters survive rate limiting (HTTP 429):** the card keeps showing

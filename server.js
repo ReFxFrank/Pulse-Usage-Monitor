@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.4.4';
+const PULSE_VERSION = '1.5.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1009,7 +1009,7 @@ function startOfLocalDay(ts) {
   return d.getTime();
 }
 
-function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ultracodeSessions) {
+function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ultracodeSessions, officialFiveHour) {
   const asc = entries.slice().sort((a, b) => a.ts - b.ts);
   annotateModes(asc, modesBySession || {}, ultracodeSessions || new Set());
   const modesLogged = Object.keys(modesBySession || {}).length > 0;
@@ -1029,7 +1029,35 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   // "vs your heaviest past block" — % of the max over all OTHER (completed)
   // blocks. Guard against a lone/first block (peak 0 → null).
   let currentBlock = null;
-  if (activeBlock) {
+  // When the official account meter has a live five-hour reset time, IT is
+  // the window — Anthropic's clock, not our reconstruction. The window spans
+  // [reset - 5h, reset]; cost/tokens are this machine's contribution inside
+  // it. Reconstruction remains the fallback (meters off, stale, or expired).
+  const officialEnd = officialFiveHour && officialFiveHour.resetsAt;
+  if (officialEnd && officialEnd > now && officialEnd - now <= BLOCK_MS + 5 * MINUTE_MS) {
+    const start = officialEnd - BLOCK_MS;
+    let cost = 0, tokens = 0, messages = 0;
+    for (const e of claudeAsc) {
+      if (e.ts >= start && e.ts <= now) { cost += e.cost; tokens += tokensOf(e); messages++; }
+    }
+    let peakCost = 0, peakTokens = 0;
+    for (const b of blocks) {
+      if (b.end > start) continue; // only fully-past reconstructed blocks compare fairly
+      if (b.cost > peakCost) peakCost = b.cost;
+      if (b.tokens > peakTokens) peakTokens = b.tokens;
+    }
+    currentBlock = {
+      start,
+      end: officialEnd,
+      cost,
+      tokens,
+      messages,
+      timeToReset: officialEnd - now,
+      vsPeakCostPct: peakCost > 0 ? (cost / peakCost) * 100 : null,
+      vsPeakTokensPct: peakTokens > 0 ? (tokens / peakTokens) * 100 : null,
+      official: true,
+    };
+  } else if (activeBlock) {
     let peakCost = 0, peakTokens = 0;
     for (const b of blocks) {
       if (b === activeBlock) continue;
@@ -1045,6 +1073,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
       timeToReset,
       vsPeakCostPct: peakCost > 0 ? (activeBlock.cost / peakCost) * 100 : null,
       vsPeakTokensPct: peakTokens > 0 ? (activeBlock.tokens / peakTokens) * 100 : null,
+      official: false,
     };
   }
 
@@ -1436,7 +1465,7 @@ function buildSummary(sourceFilter) {
     appliedFilter = Array.from(sourceFilter).sort();
   }
   const payload = aggregate(scoped, sessionMeta, desktopTitles, now,
-    mergeModes(readModes(), effortEvents), ultracodeSessions);
+    mergeModes(readModes(), effortEvents), ultracodeSessions, officialFiveHourBucket());
   if (appliedFilter) {
     // Recompute the all-time lists from UNFILTERED entries: the filter chips
     // must keep showing every source, and color assignment must not reshuffle.
@@ -1959,6 +1988,15 @@ function refreshAccountMeters(done) {
     done && done(metersState);
   });
   }); // readOauthTokenAsync
+}
+
+// The freshest official five-hour bucket, if usable: its resets_at is an
+// absolute timestamp, so even a snapshot fetched a while ago (or during a
+// rate-limit backoff) keeps telling the exact true reset time.
+function officialFiveHourBucket() {
+  if (!metersEnabled()) return null;
+  const b = (metersState.buckets || []).find((x) => x.key === 'five_hour');
+  return b && b.resetsAt ? b : null;
 }
 
 // Lazily refresh on summary builds; serve the cached state immediately.
