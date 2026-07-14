@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.3
+
+- **macOS account meters:** Claude Code stores its login in the macOS Keychain
+  rather than a file — Pulse now reads it there too (via `/usr/bin/security`,
+  asynchronously so a Keychain permission dialog can never block the server;
+  results cached 5 minutes so the dialog never nags). Approve with "Always
+  Allow" once and the Claude meters work on Macs out of the gate.
+- **Codex-only machines:** the "no Claude Code login" state now renders as a
+  neutral note with platform-appropriate guidance instead of an alarming
+  macOS-flavored warning on every OS.
+
 ## v1.4.2
 
 - **Effort chips redesigned — every level unique:** one heat ramp across both

@@ -16,7 +16,11 @@ export function MetersCard({ meters, codex, delay = 0.18 }) {
     if (anth.status === 'loading') {
       return <div className="sub">Fetching official usage from your Claude account…</div>;
     }
-    if (anth.status === 'no-login' || anth.status === 'expired' || anth.status === 'error') {
+    if (anth.status === 'no-login') {
+      // Normal on a Codex-only machine — informative, not alarming.
+      return <div className="sub">Claude meters: {anth.error || 'no Claude Code login on this machine.'}</div>;
+    }
+    if (anth.status === 'expired' || anth.status === 'error') {
       return <div className="sub" style={{ color: 'var(--warn)' }}>{anth.error || anth.status}</div>;
     }
     if (!anth.buckets || !anth.buckets.length) {

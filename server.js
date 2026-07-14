@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.4.2';
+const PULSE_VERSION = '1.4.3';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1765,12 +1765,12 @@ function metersEnabled() {
   return readConfig().accountMeters === true;
 }
 
-// Read the Claude Code OAuth access token. Returns { token, expiresAt } or
-// null. NEVER log or transmit the token anywhere except the meters endpoint.
-function readOauthToken() {
+// Parse a credentials JSON blob (file or Keychain item — same shape) into
+// { token, expiresAt } or null. NEVER log or transmit the token anywhere
+// except the meters endpoint.
+function parseCredentials(raw) {
   try {
-    const raw = fs.readFileSync(path.join(claudeDir(), '.credentials.json'), 'utf8');
-    const j = JSON.parse(raw);
+    const j = JSON.parse(String(raw).trim());
     const o = (j && j.claudeAiOauth) || j || {};
     const token = o.accessToken;
     if (typeof token !== 'string' || !token) return null;
@@ -1778,8 +1778,52 @@ function readOauthToken() {
     if (expiresAt && expiresAt < 1e12) expiresAt *= 1000; // tolerate seconds-unit stamps
     return { token, expiresAt };
   } catch (_) {
-    return null; // no file (e.g. macOS Keychain storage) or unreadable
+    return null;
   }
+}
+
+// Async token lookup: ~/.claude/.credentials.json first (Windows/Linux), then
+// the macOS login Keychain, where Claude Code stores credentials by default on
+// Macs. The Keychain read shells out to /usr/bin/security ASYNCHRONOUSLY — it
+// can pop a one-time permission dialog, and that must never block the server.
+// Results (including misses) are cached briefly so the dialog can't nag.
+const IS_MAC = process.platform === 'darwin' || process.env.PULSE_FAKE_DARWIN === '1'; // env: test hook
+const SECURITY_BIN = process.env.PULSE_SECURITY_BIN || '/usr/bin/security';
+const KEYCHAIN_SERVICES = ['Claude Code-credentials', 'Claude Code'];
+let credCache = { at: 0, cred: null };
+const CRED_CACHE_MS = 5 * 60 * 1000;
+
+function readOauthTokenAsync(cb) {
+  cb = once(cb);
+  if (Date.now() - credCache.at < CRED_CACHE_MS) return cb(credCache.cred);
+  const remember = (cred) => { credCache = { at: Date.now(), cred }; cb(cred); };
+
+  try {
+    const raw = fs.readFileSync(path.join(claudeDir(), '.credentials.json'), 'utf8');
+    const cred = parseCredentials(raw);
+    if (cred) return remember(cred);
+  } catch (_) { /* no file — fall through */ }
+
+  if (!IS_MAC) return remember(null);
+
+  // Try each known Keychain service name in turn.
+  const tryService = (i) => {
+    if (i >= KEYCHAIN_SERVICES.length) return remember(null);
+    let fired = false;
+    const child = require('child_process').execFile(
+      SECURITY_BIN, ['find-generic-password', '-s', KEYCHAIN_SERVICES[i], '-w'],
+      { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024 }, // generous: a permission dialog may be up
+      (err, stdout) => {
+        if (fired) return;
+        fired = true;
+        const cred = !err && stdout ? parseCredentials(stdout) : null;
+        if (cred) return remember(cred);
+        tryService(i + 1);
+      }
+    );
+    child.on('error', () => { if (!fired) { fired = true; tryService(i + 1); } });
+  };
+  tryService(0);
 }
 
 const METER_LABELS = {
@@ -1810,18 +1854,23 @@ function parseMeterBucket(key, v) {
 function refreshAccountMeters(done) {
   if (!metersEnabled()) { metersState.status = 'off'; return done && done(metersState); }
   if (metersInFlight) return done && done(metersState);
-  const cred = readOauthToken();
+  metersInFlight = true; // guards the credential lookup too (Keychain dialogs)
+  readOauthTokenAsync((cred) => {
   if (!cred) {
+    metersInFlight = false;
     metersState.status = 'no-login';
-    metersState.error = 'No Claude Code login found on this machine (on macOS the token may live in the Keychain, which Pulse does not read).';
+    metersState.error = IS_MAC
+      ? 'No Claude Code login found — Pulse checked ~/.claude/.credentials.json and the macOS Keychain. ' +
+        'If a Keychain permission dialog appeared, choose "Always Allow"; if you have never used Claude Code ' +
+        'on this Mac, run `claude` in Terminal once.'
+      : 'No Claude Code login found on this machine — run `claude` in a terminal once to log in.';
     return done && done(metersState);
   }
-  // NOTE: even if the file's expiresAt looks past, ATTEMPT the request — the
+  // NOTE: even if the stored expiresAt looks past, ATTEMPT the request — the
   // API is the source of truth for token validity. A local timestamp (odd
   // units, clock skew, refreshed-out-of-band tokens) must never brick the
   // card; only a real 401/403 means expired.
   const looksExpired = !!(cred.expiresAt && cred.expiresAt < Date.now());
-  metersInFlight = true;
   fetchUrl(METERS_API_URL, {
     timeoutMs: 8000,
     headers: {
@@ -1864,6 +1913,7 @@ function refreshAccountMeters(done) {
     console.log(`[pulse] account meters refreshed (${buckets.length} bucket(s))`);
     done && done(metersState);
   });
+  }); // readOauthTokenAsync
 }
 
 // Lazily refresh on summary builds; serve the cached state immediately.
@@ -2101,6 +2151,8 @@ function startServer(port, host, opts) {
           res.end(JSON.stringify({ ok: true, meters: { enabled: false } }));
           return;
         }
+        // Fresh credential lookup on every enable (e.g. right after logging in).
+        credCache = { at: 0, cred: null };
         // Respond after the first fetch so the card can render immediately.
         refreshAccountMeters(() => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
