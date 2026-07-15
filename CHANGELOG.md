@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.1
+
+- **Codex meters no longer vanish at 100%:** when a window hits its limit,
+  Codex can write a rate-limit snapshot without any `used_percent` fields;
+  that newer-but-empty snapshot used to displace the last good one and the
+  Codex rows disappeared from the Account-limits card right when they
+  mattered most. Snapshots now only win if at least one window actually
+  carries a parseable percentage.
+- **Provider labels on every meter row:** with both providers on one card,
+  rows now say whose limit they are — "Claude · 5-hour session",
+  "Claude · weekly (all models)", "Codex · session (5h)", "Codex · weekly" —
+  so a pinned Codex bar can't be mistaken for a Claude one (or vice versa).
+
 ## v1.5.0
 
 - **The 5h-block tile syncs to Anthropic's official clock:** when account

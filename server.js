@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.5.0';
+const PULSE_VERSION = '1.5.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -693,8 +693,11 @@ function parseCodexFile(filePath) {
       const info = p.info || {};
       const ts = Date.parse(rec.timestamp);
       if (!isFinite(ts)) continue;
-      if (p.rate_limits && typeof p.rate_limits === 'object' && (!rateSnapshot || ts >= rateSnapshot.ts)) {
-        rateSnapshot = { ts, limits: p.rate_limits };
+      const rl = p.rate_limits;
+      const rlUsable = rl && typeof rl === 'object' && [rl.primary, rl.secondary].some(
+        (w) => w && typeof w === 'object' && typeof w.used_percent === 'number' && isFinite(w.used_percent));
+      if (rlUsable && (!rateSnapshot || ts >= rateSnapshot.ts)) {
+        rateSnapshot = { ts, limits: rl };
       }
       const tot = info.total_token_usage || null;
       let u = info.last_token_usage || null;
@@ -1870,13 +1873,14 @@ function readOauthTokenAsync(cb) {
   tryService(0);
 }
 
+// Two providers share the Account-limits card — every row names its provider.
 const METER_LABELS = {
-  five_hour: '5-hour session',
-  seven_day: 'weekly (all models)',
-  seven_day_overall: 'weekly (all models)',
-  seven_day_opus: 'weekly · Opus',
-  seven_day_sonnet: 'weekly · Sonnet',
-  seven_day_oauth_apps: 'weekly · apps',
+  five_hour: 'Claude · 5-hour session',
+  seven_day: 'Claude · weekly (all models)',
+  seven_day_overall: 'Claude · weekly (all models)',
+  seven_day_opus: 'Claude · weekly · Opus',
+  seven_day_sonnet: 'Claude · weekly · Sonnet',
+  seven_day_oauth_apps: 'Claude · weekly · apps',
 };
 
 // Normalize one usage bucket from the API response. utilization has been seen
@@ -1892,7 +1896,7 @@ function parseMeterBucket(key, v) {
     const t = typeof v.resets_at === 'number' ? v.resets_at * (v.resets_at < 1e12 ? 1000 : 1) : Date.parse(v.resets_at);
     if (isFinite(t)) resetsAt = t;
   }
-  return { key, label: METER_LABELS[key] || key.replace(/_/g, ' '), pct: Math.max(0, Math.min(100, pct)), resetsAt };
+  return { key, label: METER_LABELS[key] || 'Claude · ' + key.replace(/_/g, ' '), pct: Math.max(0, Math.min(100, pct)), resetsAt };
 }
 
 function refreshAccountMeters(done) {
