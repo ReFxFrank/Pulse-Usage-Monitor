@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.3
+
+- **Pricing for the current Codex lineup:** added exact rows for
+  `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`,
+  `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4-pro` and `gpt-5.3-codex` at
+  OpenAI's July-2026 list prices, so these models stop falling back to
+  default pricing (and stop warning in the server log). `codex-auto-review`
+  — Codex's sandbox auto-reviewer, which runs GPT-5.4 — is priced at
+  gpt-5.4 rates. Corrected the stale `gpt-5.6-sol` row ($1.25/$10 →
+  $5/$30 per MTok); spend for Sol usage will read higher and more accurate
+  after updating.
+
 ## v1.5.2
 
 - **Per-model weekly meters (Fable & friends):** newer accounts report

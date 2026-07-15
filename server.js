@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.5.2';
+const PULSE_VERSION = '1.5.3';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -267,9 +267,23 @@ function costForEntry(e) {
 // 50% for gpt-4o/o3-mini; models without cache discounts bill cached at full
 // input price). Rows without cachedInput default to 10% of input.
 const PRICING_OPENAI = {
-  // Codex defaults (gpt-5.x family)
-  'gpt-5.6-sol':        { input: 1.25, output: 10,  cachedInput: 0.125 },
-  'gpt-5.6':            { input: 1.25, output: 10,  cachedInput: 0.125 },
+  // Codex defaults (gpt-5.x family) — list prices as of July 2026.
+  'gpt-5.6-sol':        { input: 5,    output: 30,  cachedInput: 0.5 },
+  'gpt-5.6-terra':      { input: 2.5,  output: 15,  cachedInput: 0.25 },
+  'gpt-5.6-luna':       { input: 1,    output: 6,   cachedInput: 0.1 },
+  // Bare "gpt-5.6" is not an official API id (the family ships as
+  // sol/terra/luna) — priced as terra, the mainstream tier.
+  'gpt-5.6':            { input: 2.5,  output: 15,  cachedInput: 0.25 },
+  'gpt-5.5-pro':        { input: 30,   output: 180, cachedInput: 30 },
+  'gpt-5.5':            { input: 5,    output: 30,  cachedInput: 0.5 },
+  'gpt-5.4-mini':       { input: 0.75, output: 4.5, cachedInput: 0.075 },
+  'gpt-5.4-nano':       { input: 0.2,  output: 1.25, cachedInput: 0.02 },
+  'gpt-5.4-pro':        { input: 30,   output: 180, cachedInput: 30 },
+  'gpt-5.4':            { input: 2.5,  output: 15,  cachedInput: 0.25 },
+  'gpt-5.3-codex':      { input: 1.75, output: 14,  cachedInput: 0.175 },
+  // Codex's sandbox auto-reviewer: runs GPT-5.4 (low reasoning), which has no
+  // published row of its own — priced at gpt-5.4 rates.
+  'codex-auto-review':  { input: 2.5,  output: 15,  cachedInput: 0.25 },
   'gpt-5.1-codex-mini': { input: 0.25, output: 2,   cachedInput: 0.025 },
   'gpt-5.1-codex-max':  { input: 1.25, output: 10,  cachedInput: 0.125 },
   'gpt-5.1-codex':      { input: 1.25, output: 10,  cachedInput: 0.125 },
