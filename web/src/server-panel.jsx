@@ -209,6 +209,13 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
         (nothing sent over the network by Pulse). Works out of the box: just flip it on with Discord running.
         It’s public to anyone who can see your profile.
       </div>
+      {data.history && data.history.enabled && (
+        <div className="sub" style={{ margin: '-4px 0 4px' }}>
+          <b style={{ color: 'var(--text-2)' }}>History</b> — Pulse archives each past day’s totals to{' '}
+          <code>~/.pulse</code> so the 90/180-day views survive Claude Code’s ~30-day transcript pruning.
+          {data.history.archivedDays > 0 && <> Currently keeping <b>{data.history.archivedDays}</b> archived day{data.history.archivedDays === 1 ? '' : 's'}.</>}
+        </div>
+      )}
       <div className="sub" style={{ margin: '-4px 0 12px' }}>
         Starting again is the exe: double-click <code>pulse.exe</code>, or run{' '}
         <code>pulse.exe --install-shortcuts</code> once for “Pulse” / “Pulse — Stop” Desktop buttons.

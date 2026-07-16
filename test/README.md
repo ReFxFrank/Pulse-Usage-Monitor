@@ -17,6 +17,7 @@ bash test/discord.test.sh     # one suite
 | `codex-usage.test.sh` | ChatGPT account token usage: happy path, 401→expired, no-login, zero-usage=ok, corrupt auth.json (no 500, no wedge), legacy-consent gate, no token leakage into logs |
 | `discord.test.sh` | Rich Presence: handshake, rotating pages, single-line activity, clear-on-disable, shipped default app ID, Discord-not-running degradation |
 | `effort-echo.test.sh` | Effort chips from picker confirmation echoes; anti-forgery (quoted words in prompts) |
+| `history.test.sh` | Retention: sealing past days (never today), re-seal correction, archive-only merge into long windows + totals, live-wins dedup (no double count), window scoping, `history:false` disable |
 
 Conventions when adding tests: fixture homes via `mktemp -d` + `CLAUDE_DIR` /
 `CODEX_DIR` / `PULSE_HOME` env; per-suite fixed port; fake tokens only, with

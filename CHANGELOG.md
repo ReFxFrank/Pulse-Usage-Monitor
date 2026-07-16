@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.8.0
+
+- **Durable history — long windows survive log pruning:** Claude Code deletes
+  transcripts after ~30 days (`cleanupPeriodDays`), which used to blank the
+  90/180-day views and understate all-time totals for older data. Pulse now
+  archives each sealed (fully past) day's totals — cost/tokens/messages per
+  day, source and model — to `~/.pulse/history` (one small JSON file per
+  month), and merges them back into the spend chart, by-model/by-source
+  rollups, month entries, and all-time totals. Writes only to `~/.pulse`;
+  sources stay strictly read-only. On by default — disable with
+  `{"history": false}`; the Server panel shows how many days are archived.
+- **Merge is per (day, source, model) cell.** Because `~/.claude` and
+  `~/.codex` prune independently (and Claude prunes per session file), a single
+  past day can go *partial* in the live logs while the archive still holds the
+  pruned parts. Pulse keeps, for every cell, the more-complete of the live and
+  archived observation — so a day is never undercounted, a re-seal never
+  shrinks an already-archived day, and nothing double-counts. Month files are
+  written atomically (temp + rename) so a crash can't corrupt them. Hardened
+  after an adversarial review that caught a partial-prune undercount; the
+  recovery, non-shrinking re-seal, dedup, and disable cases are covered by
+  `test/history.test.sh`.
+
 ## v1.7.3
 
 - **Cleaner presence:** removed the 5-hour/weekly meter line from the Discord

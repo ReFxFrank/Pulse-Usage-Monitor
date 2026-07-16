@@ -48,6 +48,7 @@ the old name; git remotes redirect).
 | Pricing | `PRICING` (Anthropic), `PRICING_OPENAI` (exact rows; prefix fallback ONLY for date suffixes — OpenAI `-mini`/`-pro` are different models), unknown models log once + `__default__` |
 | Effort chips | `parseLocalCommand`, `parseEffortStdout` (interactive-picker confirmation echoes), `mergeModes`, `annotateModes` (state-snapshot join: latest event ≤ entry.ts; `parseEffort` is the immutable Codex-side input) |
 | 5h block | `aggregate` — official window from meters `five_hour.resets_at` when available (`official: true`), else log reconstruction |
+| Historical retention | `sealHistory` (writes sealed past days → `~/.pulse/history/YYYY-MM.json`, gated 5 min, re-seals until pruned), `readHistory` (mtime-cached), `filterHistory`; merged in `aggregate`/`buildPeriod` — live day wins, archive fills gaps (never double-counts); augments `totals`; on by default (`{"history": false}` off) |
 | Claude account meters (opt-in) | `refreshAccountMeters`, `parseMeterBucket`, `METER_LABELS` (provider-prefixed), `limits[]` array → model-scoped weekly rows (`kind === 'weekly_scoped'`, `scope.model.display_name`, e.g. Fable), 429 backoff + last-good retention, macOS Keychain via `readOauthTokenAsync` |
 | Codex meters (automatic, local) | `codexMetersFromSnapshot` — newest rollout `rate_limits` snapshot; a snapshot only wins if a window has finite `used_percent` (at-limit snapshots can be empty) |
 | Codex account tokens (opt-in) | `refreshCodexUsage` — GET chatgpt.com/backend-api/wham/profiles/me with `~/.codex/auth.json` token + `ChatGPT-Account-Id` header → `stats.{lifetime_tokens, peak_daily_tokens, daily_usage_buckets}`; `normalizeCodexUsage` (date-validated buckets, empty-stats = ok-with-zero) |
@@ -60,13 +61,14 @@ the old name; git remotes redirect).
 Config keys: `accountMeters`, `codexAccountUsage` (separate consent — the
 dashboard toggle sets both, a pre-1.6.0 `accountMeters` alone must NOT enable
 the chatgpt.com call), `discordPresence`, `discordClientId`,
-`discordRotateSecs` (15–300), `discordLargeImage`, `updateCheck`.
+`discordRotateSecs` (15–300), `discordLargeImage`, `history` (retention; on
+unless `false`), `updateCheck`.
 
 Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
-`CODEX_DIR`/`CODEX_HOME`, `PULSE_METERS_API`, `PULSE_METERS_CACHE_MS`,
-`PULSE_CODEX_USAGE_API`, `PULSE_CODEX_USAGE_CACHE_MS`, `PULSE_DISCORD_IPC`,
-`PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`, `PULSE_DISCORD_CLIENT_ID`,
-`PULSE_MODES_FILE`, `PULSE_FAKE_DARWIN`.
+`CODEX_DIR`/`CODEX_HOME`, `PULSE_HISTORY_DIR`, `PULSE_METERS_API`,
+`PULSE_METERS_CACHE_MS`, `PULSE_CODEX_USAGE_API`, `PULSE_CODEX_USAGE_CACHE_MS`,
+`PULSE_DISCORD_IPC`, `PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`,
+`PULSE_DISCORD_CLIENT_ID`, `PULSE_MODES_FILE`, `PULSE_FAKE_DARWIN`.
 
 ## Release process (established, do not improvise)
 

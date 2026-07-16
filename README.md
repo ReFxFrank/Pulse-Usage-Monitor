@@ -38,9 +38,12 @@ which sessions ran at which reasoning effort — all from the logs already on yo
   fast mode. Works **out of the box, retroactively**: Pulse reads your `/effort`
   commands straight from the session transcripts.
 - 🎮 **Discord Rich Presence** (opt-in) — your live usage as a Discord activity,
-  rotating through today / past 7 days / all-time tokens+spend, with live
-  window meters. Talks the desktop client's local socket directly — zero
-  dependencies, nothing sent over the network by Pulse, works out of the box.
+  rotating through today / past 7 days / all-time tokens+spend. Talks the
+  desktop client's local socket directly — zero dependencies, nothing sent over
+  the network by Pulse, works out of the box.
+- 🗄 **Durable history** — Pulse archives each past day's totals to `~/.pulse`,
+  so the 90/180-day windows and all-time totals survive Claude Code's ~30-day
+  transcript pruning. On by default; writes only to `~/.pulse`.
 - 🗂 **Recent sessions table** — titles, models, mode, cost, tokens, and recency.
 - 🖥 **No console window** — on Windows the exe runs hidden in the background; logs,
   version, uptime, **Stop**, and updates live in the dashboard's **Server panel**.
@@ -273,7 +276,11 @@ then log their level to `~/.pulse/modes.jsonl` automatically.
 - Pulse reads the session logs on **this machine only**. Usage from other
   computers, claude.ai in the browser, or the mobile app won't appear.
 - **Claude Code prunes old logs** (~30 days by default via `cleanupPeriodDays`).
-  Deleted logs are gone from Pulse too. To keep history, add to `~/.claude/settings.json`:
+  Pulse now **archives each past day's totals** to `~/.pulse` before they're
+  pruned, so the long windows and all-time totals stay intact going forward
+  (spend chart + by-model/by-source; per-session detail stays recent-only).
+  History that predates your first Pulse run can still be kept in the raw logs
+  by raising the retention window in `~/.claude/settings.json`:
 
   ```json
   { "cleanupPeriodDays": 3650 }

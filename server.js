@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.7.3';
+const PULSE_VERSION = '1.8.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1059,10 +1059,14 @@ function startOfLocalDay(ts) {
   return d.getTime();
 }
 
-function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ultracodeSessions, officialFiveHour) {
+function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ultracodeSessions, officialFiveHour, history) {
   const asc = entries.slice().sort((a, b) => a.ts - b.ts);
   annotateModes(asc, modesBySession || {}, ultracodeSessions || new Set());
   const modesLogged = Object.keys(modesBySession || {}).length > 0;
+  // Days present in the live logs — the archive only fills days NOT here, so
+  // live and archived data can never double-count.
+  const hist = history && history.byDay ? history : EMPTY_HISTORY;
+  const liveDays = new Set(asc.map((e) => localDateStr(e.ts)));
 
   // ---- 5-hour blocks + active block ----
   // Claude entries only: the 5h window is CLAUDE's rate-limit concept; Codex
@@ -1153,6 +1157,10 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   }
 
   // ---- rollups ----
+  // Today / last-7-days tiles are LIVE-only: with any normal retention setting
+  // (cleanupPeriodDays >= 7, incl. the default 30) the last week is always fully
+  // on disk, so the archive would add nothing. The archive backfills the longer
+  // windows and all-time totals, where pruning actually bites.
   const midnight = startOfLocalDay(now);
   const sevenDaysAgo = now - 7 * 24 * HOUR_MS;
 
@@ -1171,6 +1179,11 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     if (!HIDDEN_MODELS.has(e.model)) allModelsSet.add(e.model);
     monthKeySet.add(localDateStr(e.ts).slice(0, 7)); // YYYY-MM
   }
+  // Archived-only sources/models/months must appear too, so colors stay stable
+  // and old months remain selectable after their logs are pruned.
+  for (const s of hist.sources) allSourcesSet.add(s);
+  for (const m of hist.models) allModelsSet.add(m);
+  for (const ds of Object.keys(hist.byDay)) if (!liveDays.has(ds)) monthKeySet.add(ds.slice(0, 7));
   const allSources = Array.from(allSourcesSet).sort();
   const allModels = Array.from(allModelsSet).sort();
 
@@ -1191,7 +1204,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     const days = localDayStartsBack(now, nDays);
     const daySet = new Set(days);
     const inWin = asc.filter((e) => daySet.has(localDateStr(e.ts)));
-    periods.push(buildPeriod(key, label, inWin, days, allSources));
+    periods.push(buildPeriod(key, label, inWin, days, allSources, hist, liveDays));
   }
   // One period per calendar month present in the data (newest first, capped).
   const months = Array.from(monthKeySet).sort().reverse().slice(0, 24);
@@ -1199,7 +1212,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     const [y, m] = mk.split('-').map(Number);
     const days = monthDayList(y, m - 1);
     const inMonth = asc.filter((e) => localDateStr(e.ts).slice(0, 7) === mk);
-    periods.push(buildPeriod(mk, monthLabel(y, m), inMonth, days, allSources));
+    periods.push(buildPeriod(mk, monthLabel(y, m), inMonth, days, allSources, hist, liveDays));
   }
 
   // ---- recent sessions (newest first) ----
@@ -1238,15 +1251,38 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
       lastTs: s.lastTs,
     }));
 
+  // All-time totals include archived days the live logs no longer hold, so the
+  // totals tile (and Discord's all-time page) reflect true history, not just
+  // the ~30 days still on disk. Merged per (day, source, model) cell — the
+  // more-complete of live vs archive — so a partially-pruned day isn't
+  // undercounted and nothing double-counts. Sessions stays live-only (archived
+  // per-day counts can't be de-duplicated across days).
+  const liveCellsByDay = {};
+  for (const e of asc) {
+    const ds = localDateStr(e.ts);
+    const k = cellKey(e.source, e.model);
+    const day = liveCellsByDay[ds] || (liveCellsByDay[ds] = {});
+    const cell = day[k] || (day[k] = { source: e.source, model: e.model, cost: 0, tokens: 0, messages: 0 });
+    cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
+  }
+  const totals = { cost: 0, tokens: 0, messages: 0, sessions: Object.keys(sessMap).length };
+  const allDays = new Set(Object.keys(liveCellsByDay));
+  for (const ds of Object.keys(hist.byDay)) allDays.add(ds);
+  for (const ds of allDays) {
+    const lc = liveCellsByDay[ds] || {};
+    const ac = indexCells(hist.byDay[ds] && hist.byDay[ds].rows);
+    const keys = new Set(Object.keys(lc));
+    for (const k of Object.keys(ac)) keys.add(k);
+    for (const k of keys) {
+      const cell = pickCell(lc[k], ac[k]);
+      totals.cost += cell.cost; totals.tokens += cell.tokens; totals.messages += cell.messages;
+    }
+  }
+
   const payload = {
     generatedAt: now,
     latestTs: asc.length ? asc[asc.length - 1].ts : null, // newest record on this machine
-    totals: {
-      cost: entries.reduce((a, e) => a + e.cost, 0),
-      tokens: entries.reduce((a, e) => a + tokensOf(e), 0),
-      messages: entries.length,
-      sessions: Object.keys(sessMap).length,
-    },
+    totals,
     currentBlock,
     idle: activeBlock === null,
     burnRate,
@@ -1269,7 +1305,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
 
 // Build one spend period: daily buckets (split by source) + by-model/by-source
 // rollups + totals, over the given entries and ordered day list.
-function buildPeriod(key, label, entries, dayList, allSources) {
+function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
   const index = {};
   const daily = [];
   for (const ds of dayList) {
@@ -1279,34 +1315,60 @@ function buildPeriod(key, label, entries, dayList, allSources) {
     daily.push(bucket);
   }
   const byModel = {}, bySource = {}, srcSet = new Set(), sess = new Set();
-  let cost = 0, tokens = 0;
+  let cost = 0, tokens = 0, messages = 0;
+
+  // Pass 1: fold live entries into per-(day,source,model) cells, and accumulate
+  // the decorative chips (speed/tier/effort/ultracode) + distinct sessions from
+  // the live logs only.
+  const liveCells = {};
   for (const e of entries) {
-    const tk = tokensOf(e);
-    const b = index[localDateStr(e.ts)];
-    if (b) {
-      b.total += e.cost;
-      b.tokens += tk;
-      b.bySource[e.source] = (b.bySource[e.source] || 0) + e.cost;
-    }
-    cost += e.cost; tokens += tk; srcSet.add(e.source);
-    // Hidden placeholders (e.g. "<synthetic>") still count toward totals — they
-    // are $0 / 0-token — but never appear as a row in the by-model breakdown.
+    const ds = localDateStr(e.ts);
+    const k = cellKey(e.source, e.model);
+    const day = liveCells[ds] || (liveCells[ds] = {});
+    const cell = day[k] || (day[k] = { source: e.source, model: e.model, cost: 0, tokens: 0, messages: 0 });
+    cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
+    if (e.sessionId) sess.add(e.sessionId);
+    // Hidden placeholders (e.g. "<synthetic>") still count toward the daily/day
+    // totals (they are $0 / 0-token) but never get a by-model row or chips.
     if (!HIDDEN_MODELS.has(e.model)) {
       const m = byModel[e.model] || (byModel[e.model] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
-      m.cost += e.cost; m.tokens += tk; m.messages++;
       m.speeds[e.speed] = (m.speeds[e.speed] || 0) + 1;
       m.tiers[e.serviceTier] = (m.tiers[e.serviceTier] || 0) + 1;
       if (e.effort) m.efforts = m.efforts || {}, m.efforts[e.effort] = (m.efforts[e.effort] || 0) + 1;
       if (e.ultracode) m.ultracode = (m.ultracode || 0) + 1;
     }
     const s = bySource[e.source] || (bySource[e.source] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
-    s.cost += e.cost; s.tokens += tk; s.messages++;
     s.speeds[e.speed] = (s.speeds[e.speed] || 0) + 1;
-    if (e.sessionId) sess.add(e.sessionId);
+  }
+
+  // Pass 2: for each day, take the MORE-COMPLETE observation of every cell —
+  // live or archived — and fold it into the daily buckets and rollups. Merging
+  // per cell (not all-or-nothing per day) recovers a provider/session pruned
+  // from the live logs while another remains, and each cell contributes exactly
+  // once, so nothing is double-counted.
+  for (const ds of dayList) {
+    const lc = liveCells[ds] || {};
+    const ac = hist ? indexCells(hist.byDay[ds] && hist.byDay[ds].rows) : {};
+    const keys = new Set(Object.keys(lc));
+    for (const k of Object.keys(ac)) keys.add(k);
+    const b = index[ds];
+    for (const k of keys) {
+      const cell = pickCell(lc[k], ac[k]);
+      if (b) { b.total += cell.cost; b.tokens += cell.tokens; b.bySource[cell.source] = (b.bySource[cell.source] || 0) + cell.cost; }
+      cost += cell.cost; tokens += cell.tokens; messages += cell.messages; srcSet.add(cell.source);
+      if (!HIDDEN_MODELS.has(cell.model)) {
+        const m = byModel[cell.model] || (byModel[cell.model] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
+        m.cost += cell.cost; m.tokens += cell.tokens; m.messages += cell.messages;
+      }
+      const s = bySource[cell.source] || (bySource[cell.source] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
+      s.cost += cell.cost; s.tokens += cell.tokens; s.messages += cell.messages;
+    }
   }
   const sources = Array.from(srcSet).sort();
+  // sessions is live-only: archived per-day session counts can't be de-duplicated
+  // across days or split by source, so they are not summed here.
   return {
-    key, label, cost, tokens, messages: entries.length, sessions: sess.size,
+    key, label, cost, tokens, messages, sessions: sess.size,
     daily, byModel, bySource, sources, singleSource: sources.length <= 1,
   };
 }
@@ -1339,6 +1401,164 @@ function monthDayList(year, monthIdx) {
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function monthLabel(year, month /* 1-based */) {
   return (MONTH_NAMES[month - 1] || '?') + ' ' + year;
+}
+
+// ---------------------------------------------------------------------------
+// HISTORICAL RETENTION  (§5)
+// Claude Code prunes transcripts after ~cleanupPeriodDays (30 by default),
+// which would blank the 90/180-day windows and understate all-time totals for
+// older data. Pulse keeps a daily rollup — cost/tokens/messages per
+// (day, source, model), plus a per-day session count — under ~/.pulse/history,
+// one JSON file per calendar month. Only SEALED (fully-past) days are written;
+// today is always live. On read, a day is taken from the live logs if it has
+// ANY entry, else from the archive — so live and archive never double-count.
+// Writes ONLY to ~/.pulse; sources stay read-only. On by default; disable with
+// {"history": false}. Test override: PULSE_HISTORY_DIR.
+// ---------------------------------------------------------------------------
+function historyEnabled() { return readConfig().history !== false; }
+function historyDir() {
+  return process.env.PULSE_HISTORY_DIR || path.join(pulseHome(), 'history');
+}
+
+const EMPTY_HISTORY = { byDay: {}, sources: new Set(), models: new Set(), months: new Set() };
+let historyCache = { sig: '', data: null };
+
+// Read every archived month into { byDay, sources, models, months }. Cached by
+// the set of month files and their mtimes, so we reparse only on change.
+function readHistory() {
+  if (!historyEnabled()) return EMPTY_HISTORY;
+  const dir = historyDir();
+  let files;
+  try { files = fs.readdirSync(dir).filter((f) => /^\d{4}-\d{2}\.json$/.test(f)).sort(); }
+  catch (_) { return EMPTY_HISTORY; }
+  let sig = '';
+  for (const f of files) {
+    try { sig += f + ':' + fs.statSync(path.join(dir, f)).mtimeMs + ';'; } catch (_) {}
+  }
+  if (historyCache.sig === sig && historyCache.data) return historyCache.data;
+  const byDay = {}, sources = new Set(), models = new Set(), months = new Set();
+  for (const f of files) {
+    let obj;
+    try { obj = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (_) { continue; }
+    if (!obj || typeof obj !== 'object') continue;
+    months.add(f.slice(0, 7));
+    for (const ds of Object.keys(obj)) {
+      const rec = obj[ds];
+      if (!rec || !Array.isArray(rec.rows)) continue;
+      const rows = [];
+      for (const r of rec.rows) {
+        if (!r || typeof r.source !== 'string' || typeof r.model !== 'string') continue;
+        rows.push({ source: r.source, model: r.model, cost: +r.cost || 0, tokens: +r.tokens || 0, messages: +r.messages || 0 });
+        sources.add(r.source);
+        if (!HIDDEN_MODELS.has(r.model)) models.add(r.model);
+      }
+      byDay[ds] = { rows, sessions: +rec.sessions || 0 };
+    }
+  }
+  const data = { byDay, sources, models, months };
+  historyCache = { sig, data };
+  return data;
+}
+
+// Restrict an archive view to a set of sources (mirrors the dashboard's source
+// filter). Session counts aren't source-split, so they carry over as-is.
+function filterHistory(history, sourceSet) {
+  const byDay = {}, sources = new Set(), models = new Set();
+  for (const ds of Object.keys(history.byDay)) {
+    const rows = history.byDay[ds].rows.filter((r) => sourceSet.has(r.source));
+    if (!rows.length) continue;
+    byDay[ds] = { rows, sessions: history.byDay[ds].sessions };
+    for (const r of rows) { sources.add(r.source); if (!HIDDEN_MODELS.has(r.model)) models.add(r.model); }
+  }
+  return { byDay, sources, models, months: history.months };
+}
+
+// Live logs for a single past day can SHRINK over time — ~/.claude and ~/.codex
+// prune independently, and Claude prunes per session file by mtime — so a day
+// can be partial in the logs while the archive still holds the pruned cells.
+// Both the seal (mergeDayRecord) and the read (pickCell) therefore merge per
+// (source,model) cell and keep the more-complete observation, so a re-seal
+// never shrinks a day and reads never miss a pruned cell. Keys are in-memory
+// only (never persisted — rows store source/model separately); a space
+// separator is safe since source/model identifiers contain none.
+const cellKey = (source, model) => source + ' ' + model;
+function indexCells(rows) {
+  const o = {};
+  if (Array.isArray(rows)) for (const r of rows) {
+    if (r && typeof r.source === 'string' && typeof r.model === 'string') o[cellKey(r.source, r.model)] = r;
+  }
+  return o;
+}
+// Pruning only ever removes messages, so the observation with MORE messages
+// (tie: more cost) is the more complete one.
+function pickCell(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return (b.messages > a.messages || (b.messages === a.messages && b.cost > a.cost)) ? b : a;
+}
+// Non-shrinking union of an archived day and a freshly-sealed one: keep the
+// more-complete observation of every cell, so a cell since pruned from the live
+// logs is preserved rather than overwritten with the now-partial value.
+function mergeDayRecord(existing, fresh) {
+  if (!existing || !Array.isArray(existing.rows)) return fresh;
+  const cells = indexCells(existing.rows);
+  for (const r of fresh.rows) { const k = cellKey(r.source, r.model); cells[k] = pickCell(cells[k], r); }
+  return { rows: Object.values(cells), sessions: Math.max(+existing.sessions || 0, fresh.sessions || 0) };
+}
+
+// Fold live entries into per-(day,source,model) rollups for SEALED days only,
+// then write the month files that changed. Gated so summary builds don't churn
+// the disk; a still-present day is re-sealed (kept fresh) until it's pruned.
+let lastSealAt = 0;
+function sealHistory(entries) {
+  if (!historyEnabled()) return;
+  const now = Date.now();
+  if (lastSealAt && now - lastSealAt < 5 * 60 * 1000) return; // at most every 5 min
+  lastSealAt = now;
+  const today = localDateStr(now);
+  const byDay = {}, sessByDay = {};
+  for (const e of entries) {
+    const ds = localDateStr(e.ts);
+    if (ds >= today) continue; // never seal today (still accumulating)
+    const key = cellKey(e.source, e.model);
+    const d = byDay[ds] || (byDay[ds] = {});
+    const cell = d[key] || (d[key] = { source: e.source, model: e.model, cost: 0, tokens: 0, messages: 0 });
+    cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
+    if (e.sessionId) (sessByDay[ds] || (sessByDay[ds] = new Set())).add(e.sessionId);
+  }
+  const months = {};
+  for (const ds of Object.keys(byDay)) {
+    (months[ds.slice(0, 7)] || (months[ds.slice(0, 7)] = {}))[ds] = {
+      rows: Object.values(byDay[ds]),
+      sessions: sessByDay[ds] ? sessByDay[ds].size : 0,
+    };
+  }
+  let wrote = false;
+  for (const mk of Object.keys(months)) {
+    const file = path.join(historyDir(), mk + '.json');
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (_) {}
+    // Re-seal keeps the more-complete cell for each recomputed day (never
+    // shrinks); days not recomputed (already pruned) are preserved untouched.
+    const merged = { ...existing };
+    for (const ds of Object.keys(months[mk])) merged[ds] = mergeDayRecord(existing[ds], months[mk][ds]);
+    const ordered = {};
+    for (const k of Object.keys(merged).sort()) ordered[k] = merged[k];
+    const next = JSON.stringify(ordered);
+    let prev = null;
+    try { prev = fs.readFileSync(file, 'utf8'); } catch (_) {}
+    if (prev === next) continue;
+    try {
+      fs.mkdirSync(historyDir(), { recursive: true });
+      // Atomic write: a crash mid-write must never truncate the file and lose
+      // already-pruned days. Write a temp, then rename over the target.
+      const tmp = file + '.tmp';
+      fs.writeFileSync(tmp, next);
+      fs.renameSync(tmp, file);
+      wrote = true;
+    } catch (err) { console.warn('[pulse] history write failed: ' + err.message); }
+  }
+  if (wrote) historyCache = { sig: '', data: null }; // force reload on next read
 }
 
 // A compact view of the active price table, for the UI "estimates" note.
@@ -1508,18 +1728,23 @@ function buildSummary(sourceFilter) {
   const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount, codexFileCount, codexRateSnapshot } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
+  const history = readHistory();
+  sealHistory(entries); // gated internally; archives sealed days to ~/.pulse
   let scoped = entries;
+  let scopedHistory = history;
   let appliedFilter = null;
   if (sourceFilter && sourceFilter.size) {
     scoped = entries.filter((e) => sourceFilter.has(e.source));
+    scopedHistory = filterHistory(history, sourceFilter);
     appliedFilter = Array.from(sourceFilter).sort();
   }
   const payload = aggregate(scoped, sessionMeta, desktopTitles, now,
-    mergeModes(readModes(), effortEvents), ultracodeSessions, officialFiveHourBucket());
+    mergeModes(readModes(), effortEvents), ultracodeSessions, officialFiveHourBucket(), scopedHistory);
   if (appliedFilter) {
-    // Recompute the all-time lists from UNFILTERED entries: the filter chips
-    // must keep showing every source, and color assignment must not reshuffle.
-    const srcSet = new Set(), modelSet = new Set();
+    // Recompute the all-time lists from UNFILTERED entries + archive: the filter
+    // chips must keep showing every source (live or archived-only), and color
+    // assignment must not reshuffle.
+    const srcSet = new Set(history.sources), modelSet = new Set(history.models);
     for (const e of entries) {
       srcSet.add(e.source);
       if (!HIDDEN_MODELS.has(e.model)) modelSet.add(e.model);
@@ -1535,6 +1760,8 @@ function buildSummary(sourceFilter) {
   payload.codexDir = codexDir();
   payload.codexFileCount = codexFileCount || 0;
   payload.hasCodex = (codexFileCount || 0) > 0;
+  // Retention status: how many past days Pulse has archived beyond the logs.
+  payload.history = { enabled: historyEnabled(), archivedDays: Object.keys(history.byDay).length };
   // Server panel: identity + update state.
   payload.version = PULSE_VERSION;
   payload.serverStartTs = SERVER_START;
@@ -2872,6 +3099,11 @@ function startServer(port, host, opts) {
       if (iv.unref) iv.unref();
     }
     startDiscordLoop(); // no-ops every tick unless discordPresence is on
+    // Seal history even on a headless daemon that no one is viewing (viewers
+    // and the Discord tick would otherwise be the only triggers).
+    try { sealHistory(parseAll().entries); } catch (_) {}
+    const sealIv = setInterval(() => { try { sealHistory(parseAll().entries); } catch (_) {} }, 30 * 60 * 1000);
+    if (sealIv.unref) sealIv.unref();
   });
   return server;
 }
