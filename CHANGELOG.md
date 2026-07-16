@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.7.2
+
+- **Rotating presence pages:** instead of cramming every number into two
+  lines, the Discord activity now alternates — "Today: 80.0M tokens · $136" →
+  "Past 7 days: …" → "All-time: …" — flipping every 45 s (configurable
+  15–300 s via `discordRotateSecs`). Elapsed time stays continuous across
+  pages. With account meters on, the second line carries the live windows
+  ("Claude 5h 38% · wk 67% · Codex wk 71%"); session count is gone.
+
 ## v1.7.1
 
 - **Discord presence now works out of the box:** Pulse ships with the official

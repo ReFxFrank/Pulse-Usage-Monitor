@@ -37,10 +37,10 @@ which sessions ran at which reasoning effort — all from the logs already on yo
 - 🧠 **Reasoning-effort chips** — see which sessions ran at `low → max`, ultracode, or
   fast mode. Works **out of the box, retroactively**: Pulse reads your `/effort`
   commands straight from the session transcripts.
-- 🎮 **Discord Rich Presence** (opt-in) — your live usage as a Discord activity:
-  today's and all-time tokens/spend, window meters on hover, and a "Get Pulse"
-  button. Talks the desktop client's local socket directly — zero dependencies,
-  nothing sent over the network by Pulse.
+- 🎮 **Discord Rich Presence** (opt-in) — your live usage as a Discord activity,
+  rotating through today / past 7 days / all-time tokens+spend, with live
+  window meters. Talks the desktop client's local socket directly — zero
+  dependencies, nothing sent over the network by Pulse, works out of the box.
 - 🗂 **Recent sessions table** — titles, models, mode, cost, tokens, and recency.
 - 🖥 **No console window** — on Windows the exe runs hidden in the background; logs,
   version, uptime, **Stop**, and updates live in the dashboard's **Server panel**.
@@ -202,9 +202,11 @@ Claude Code (`/usage`). Pulse can read the same gauge:
 
 ## 🎮 Discord Rich Presence (opt-in)
 
-Show Pulse as a Discord activity — "Today 1.2M tokens · $4.20" / "All-time
-812M tokens · $904 · 61 sessions", with live window meters in the hover text
-and a **Get Pulse** button.
+Show Pulse as a Discord activity that rotates through your usage — **"Today:
+80.0M tokens · $136" → "Past 7 days: 500M tokens · $980" → "All-time: 2.69B
+tokens · $2,581"** — one page every 45 s (set `discordRotateSecs` in
+`~/.pulse/config.json`, 15–300), with live window meters on the second line
+when account meters are on, and a **Get Pulse** button.
 
 **Zero setup:** click **Discord presence: off → on** in the Server panel while
 the Discord desktop app is running. Pulse ships with the official Pulse

@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.7.1';
+const PULSE_VERSION = '1.7.2';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -2448,15 +2448,33 @@ function fmtTok(v) {
 // Compose the activity from the same aggregates the dashboard shows.
 // buildSummary() is mtime-cached, so a 15s cadence costs ~the same as one
 // dashboard poll. Numbers shown: today's spend/tokens + live window meters.
+// Page rotation cadence: default 45s (comfortably above Discord's 15s update
+// floor), configurable via discordRotateSecs (clamped 15–300) or the test
+// hook PULSE_DISCORD_ROTATE_MS. Pages derive from the wall clock, so no
+// rotation state survives reconnects — it just keeps cycling.
+const DISCORD_ROTATE_MS_DEFAULT = 45 * 1000;
+function discordRotateMs() {
+  const env = parseInt(process.env.PULSE_DISCORD_ROTATE_MS, 10);
+  if (isFinite(env) && env >= 500) return env;
+  const c = readConfig().discordRotateSecs;
+  if (typeof c === 'number' && isFinite(c)) return Math.min(300, Math.max(15, c)) * 1000;
+  return DISCORD_ROTATE_MS_DEFAULT;
+}
+
 function buildDiscordActivity() {
   let s = null;
   try { s = buildSummary(null); } catch (_) { return null; }
   if (!s) return null;
-  // Line 1: today · Line 2: overall totals. Live window meters go in the
-  // large-image tooltip (hover), where longer text is fine.
-  const details = 'Today ' + fmtTok(s.today.tokens) + ' tokens · ' + fmtMoney(s.today.cost);
-  const state = 'All-time ' + fmtTok(s.totals.tokens) + ' tokens · ' + fmtMoney(s.totals.cost) +
-    ' · ' + s.totals.sessions + ' sessions';
+  // One period per page — Today / Past 7 days / All-time — alternating on
+  // the shared clock. Live window meters sit on the second line of every
+  // page; without meters the activity is a single line.
+  const pages = [
+    { label: 'Today', tokens: s.today.tokens, cost: s.today.cost },
+    { label: 'Past 7 days', tokens: s.week.tokens, cost: s.week.cost },
+    { label: 'All-time', tokens: s.totals.tokens, cost: s.totals.cost },
+  ];
+  const p = pages[Math.floor(Date.now() / discordRotateMs()) % pages.length];
+  const details = p.label + ': ' + fmtTok(p.tokens) + ' tokens · ' + fmtMoney(p.cost);
   const meterBits = [];
   if (s.meters && s.meters.enabled && s.meters.buckets) {
     const fh = s.meters.buckets.find((b) => b.key === 'five_hour');
@@ -2468,19 +2486,18 @@ function buildDiscordActivity() {
     const cw = s.codexMeters.buckets.find((b) => b.key === 'codex_secondary' && !b.stale);
     if (cw) meterBits.push('Codex wk ' + cw.pct.toFixed(0) + '%');
   }
-  return {
+  const act = {
     details: details.slice(0, 128),
-    state: state.slice(0, 128),
-    timestamps: { start: SERVER_START },
+    timestamps: { start: SERVER_START }, // elapsed stays continuous across pages
     assets: {
       large_image: readConfig().discordLargeImage || 'pulse',
-      large_text: (meterBits.length
-        ? 'Pulse · ' + meterBits.join(' · ')
-        : 'Pulse — local Claude/Codex usage dashboard').slice(0, 128),
+      large_text: 'Pulse — local Claude/Codex usage dashboard',
     },
     buttons: [{ label: 'Get Pulse', url: PULSE_REPO_URL }],
     instance: false,
   };
+  if (meterBits.length) act.state = meterBits.join(' · ').slice(0, 128);
+  return act;
 }
 
 function discordSetActivity(activity) {
