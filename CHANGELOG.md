@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.10.0
+
+- **Spend by effort and by project:** the spend section gains two breakdowns
+  that re-scope with the selected window. **By effort** groups your spend by the
+  reasoning-effort level in force — `low → max`, `ultracode`, or `default` when
+  none was set — with bars colored to match the effort chips, so you can finally
+  see what ultracode actually costs versus plain runs. **By project** groups by
+  working directory (folder name shown, full path on hover), top 30 by cost with
+  the long tail folded into “(other)”. Both are computed from sessions still in
+  your logs (the long-window archive keeps day/model totals, not per-entry
+  effort or project) and each carries a `liveCost` so the coverage is honest.
+
 ## v1.9.0
 
 - **Status line for Claude Code:** a compact line via `pulse --statusline` —

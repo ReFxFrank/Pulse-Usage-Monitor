@@ -234,6 +234,75 @@ export function BarList({ rows }) {
   );
 }
 
+// Spend broken down by reasoning-effort level (incl. ultracode / default) —
+// bars colored to match the effort-chip heat ramp.
+const EFFORT_SPEND_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'default'];
+const EFFORT_BAR_COLORS = {
+  minimal: '#8a8f98', low: '#22b892', medium: '#4a9bf5', high: '#9b8cff',
+  xhigh: '#e0a132', max: '#f27878', ultracode: '#c07be0', default: '#5b6270',
+};
+export function EffortSpendBars({ spend }) {
+  const keys = EFFORT_SPEND_ORDER.filter((k) => spend && spend[k] && spend[k].cost > 0);
+  if (!keys.length) {
+    return <div className="sub" style={{ marginTop: 4 }}>No effort recorded in this window — set a level with <code>/effort</code> and it appears here.</div>;
+  }
+  let max = 0;
+  keys.forEach((k) => { if (spend[k].cost > max) max = spend[k].cost; });
+  if (max <= 0) max = 1;
+  const label = (k) => (k === 'ultracode' ? 'ultra' : k);
+  const cls = (k) => (k === 'ultracode' ? 'spdb ultra' : k === 'default' ? 'spdb' : 'spdb e-' + k);
+  return (
+    <div className="hbars">
+      {keys.map((k) => (
+        <InfoTip key={k} text={`${label(k)} — ${money2(spend[k].cost)} · ${tokens(spend[k].tokens)} tokens · ${num(spend[k].messages)} msgs`}>
+          <div className="hbar">
+            <div className="nm"><span className={cls(k)}>{label(k)}</span></div>
+            <div className="track">
+              <motion.i style={{ background: EFFORT_BAR_COLORS[k] }} initial={{ width: 0 }}
+                animate={{ width: Math.max(2, (spend[k].cost / max) * 100) + '%' }} transition={{ duration: 0.7, ease: EASE }} />
+            </div>
+            <div className="v">{money2(spend[k].cost)} <small>· {tokens(spend[k].tokens)}</small></div>
+          </div>
+        </InfoTip>
+      ))}
+    </div>
+  );
+}
+
+// Spend by project (working directory). Rows arrive pre-sorted by cost; we show
+// the folder name and keep the full path in the tooltip.
+function projectBase(p) {
+  const s = String(p).replace(/[\\/]+$/, '');
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+export function ProjectBars({ rows }) {
+  if (!rows || !rows.length) return <div className="sub" style={{ marginTop: 4 }}>No project activity in this window.</div>;
+  let max = 0;
+  rows.forEach((r) => { if (r.cost > max) max = r.cost; });
+  if (max <= 0) max = 1;
+  return (
+    <div className="hbars">
+      {rows.map((r) => {
+        const special = r.project === '(other)' || r.project === '(unknown)';
+        const name = special ? r.project : projectBase(r.project);
+        return (
+          <InfoTip key={r.project} text={`${r.project} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs · ${num(r.sessions)} sessions`}>
+            <div className="hbar">
+              <div className="nm" style={special ? { color: 'var(--text-3)', fontStyle: 'italic' } : null}>{name}</div>
+              <div className="track">
+                <motion.i style={{ background: 'linear-gradient(90deg, #6f8cff, #9b8cff)' }} initial={{ width: 0 }}
+                  animate={{ width: Math.max(2, (r.cost / max) * 100) + '%' }} transition={{ duration: 0.7, ease: EASE }} />
+              </div>
+              <div className="v">{money2(r.cost)} <small>· {tokens(r.tokens)}</small></div>
+            </div>
+          </InfoTip>
+        );
+      })}
+    </div>
+  );
+}
+
 // with effort chips present, a "standard" speed chip on every row is noise —
 // keep speed chips for the interesting case (fast) only
 function onlyNonStandard(speeds) {

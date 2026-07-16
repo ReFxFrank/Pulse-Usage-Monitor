@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.9.0';
+const PULSE_VERSION = '1.10.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1332,6 +1332,10 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
   }
   const byModel = {}, bySource = {}, srcSet = new Set(), sess = new Set();
   let cost = 0, tokens = 0, messages = 0;
+  // Analytics breakdowns — live-only (the archive keeps day/source/model totals,
+  // not per-entry effort or project), so these cover the sessions still in your
+  // logs. Effort bucket = ultracode | <level> | default (no explicit level).
+  const effortSpend = {}, byProject = {};
 
   // Pass 1: fold live entries into per-(day,source,model) cells, and accumulate
   // the decorative chips (speed/tier/effort/ultracode) + distinct sessions from
@@ -1347,11 +1351,19 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
     // Hidden placeholders (e.g. "<synthetic>") still count toward the daily/day
     // totals (they are $0 / 0-token) but never get a by-model row or chips.
     if (!HIDDEN_MODELS.has(e.model)) {
+      const tk = tokensOf(e);
       const m = byModel[e.model] || (byModel[e.model] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
       m.speeds[e.speed] = (m.speeds[e.speed] || 0) + 1;
       m.tiers[e.serviceTier] = (m.tiers[e.serviceTier] || 0) + 1;
       if (e.effort) m.efforts = m.efforts || {}, m.efforts[e.effort] = (m.efforts[e.effort] || 0) + 1;
       if (e.ultracode) m.ultracode = (m.ultracode || 0) + 1;
+      const eb = e.ultracode ? 'ultracode' : (e.effort || 'default');
+      const es = effortSpend[eb] || (effortSpend[eb] = { cost: 0, tokens: 0, messages: 0 });
+      es.cost += e.cost; es.tokens += tk; es.messages++;
+      const proj = e.project || '(unknown)';
+      const pb = byProject[proj] || (byProject[proj] = { cost: 0, tokens: 0, messages: 0, sessions: new Set() });
+      pb.cost += e.cost; pb.tokens += tk; pb.messages++;
+      if (e.sessionId) pb.sessions.add(e.sessionId);
     }
     const s = bySource[e.source] || (bySource[e.source] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
     s.speeds[e.speed] = (s.speeds[e.speed] || 0) + 1;
@@ -1381,11 +1393,30 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
     }
   }
   const sources = Array.from(srcSet).sort();
+  // Project breakdown: resolve session Sets to counts, keep the top 30 by cost
+  // and fold the long tail into "(other)" so the payload stays small.
+  const projEntries = Object.keys(byProject).map((p) => {
+    const v = byProject[p];
+    return { project: p, cost: v.cost, tokens: v.tokens, messages: v.messages, sessions: v.sessions.size };
+  }).sort((a, b) => b.cost - a.cost);
+  const TOP_PROJECTS = 30;
+  const byProjectOut = projEntries.slice(0, TOP_PROJECTS);
+  if (projEntries.length > TOP_PROJECTS) {
+    const rest = projEntries.slice(TOP_PROJECTS).reduce((a, p) => {
+      a.cost += p.cost; a.tokens += p.tokens; a.messages += p.messages; a.sessions += p.sessions; return a;
+    }, { project: '(other)', cost: 0, tokens: 0, messages: 0, sessions: 0 });
+    byProjectOut.push(rest);
+  }
+  // Live-only spend covered by the effort/project breakdowns (period cost also
+  // includes archived days, which don't retain effort/project) — lets the UI
+  // say what fraction the breakdowns account for.
+  const liveCost = Object.values(effortSpend).reduce((a, b) => a + b.cost, 0);
   // sessions is live-only: archived per-day session counts can't be de-duplicated
   // across days or split by source, so they are not summed here.
   return {
     key, label, cost, tokens, messages, sessions: sess.size,
     daily, byModel, bySource, sources, singleSource: sources.length <= 1,
+    effortSpend, byProject: byProjectOut, liveCost,
   };
 }
 

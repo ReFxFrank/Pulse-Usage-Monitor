@@ -6,7 +6,7 @@ import {
 } from './lib.js';
 import { SpendChart, Sparkline } from './charts.jsx';
 import {
-  Card, CurrentBlock, BurnRate, Rollup, BarList, SessionsTable, PeriodSelect, Legend, InfoTip,
+  Card, CurrentBlock, BurnRate, Rollup, BarList, EffortSpendBars, ProjectBars, SessionsTable, PeriodSelect, Legend, InfoTip,
 } from './panels.jsx';
 import { ServerPanel, StopButton } from './server-panel.jsx';
 import { MetersCard } from './meters.jsx';
@@ -252,6 +252,27 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
                 <BarList rows={sourceRows} />
               </Card>
             )}
+          </div>
+
+          <div className="grid cols-2">
+            <Card delay={0.3}>
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                By effort · {period.label}
+                <InfoTip text="Spend grouped by the reasoning-effort level in force (low → max, ultracode, or default when none was set). Covers sessions still in your logs — the long-window archive keeps day/model totals, not per-entry effort.">
+                  <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
+                </InfoTip>
+              </h2>
+              <EffortSpendBars spend={period.effortSpend} />
+            </Card>
+            <Card delay={0.32}>
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                By project · {period.label}
+                <InfoTip text="Spend grouped by working directory (project). Folder name shown; hover for the full path. Top 30 by cost; the rest fold into “(other)”. Covers sessions still in your logs.">
+                  <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
+                </InfoTip>
+              </h2>
+              <ProjectBars rows={period.byProject} />
+            </Card>
           </div>
         </>
       )}

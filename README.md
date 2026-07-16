@@ -48,6 +48,10 @@ which sessions ran at which reasoning effort — all from the logs already on yo
   showing your model + context alongside Pulse's today spend, current 5-hour
   block, and official meter %s. Fed by the running server over loopback, so it
   reflects **all** your usage and never polls a provider endpoint itself.
+- 📊 **Spend by effort & by project** — the spend section also breaks the
+  selected window down by reasoning-effort level (low → max, ultracode) and by
+  project directory, so you can see what ultracode is actually costing you and
+  which projects are heaviest.
 - 🗂 **Recent sessions table** — titles, models, mode, cost, tokens, and recency.
 - 🖥 **No console window** — on Windows the exe runs hidden in the background; logs,
   version, uptime, **Stop**, and updates live in the dashboard's **Server panel**.
