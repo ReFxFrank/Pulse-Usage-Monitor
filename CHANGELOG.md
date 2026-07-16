@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.6.0
+
+- **Real account-wide token counts for Codex (opt-in):** the Account-limits
+  card now shows your ChatGPT account's true token usage — today, past 7 days,
+  lifetime, plus a 30-day daily mini-chart — fetched from the same endpoint
+  that powers Codex's own usage chart. This covers every device, not just
+  this machine's logs. Uses the ChatGPT login Codex already stores in
+  `~/.codex/auth.json` (read-only, never logged, sent only to chatgpt.com),
+  behind the same Account-meters switch as the Claude meters, polled once
+  per 10 minutes with 429 backoff and expired-login handling.
+- **Why there's no Claude equivalent:** Anthropic's usage API reports only
+  utilization percentages — no token counts exist for individual accounts
+  (verified against the endpoint schema; the token-denominated Admin API is
+  organizations-only). The card says so honestly.
+
 ## v1.5.3
 
 - **Pricing for the current Codex lineup:** added exact rows for

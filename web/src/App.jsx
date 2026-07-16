@@ -196,7 +196,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
         <Rollup label="Last 7 days" r={data.week} delay={0.15} />
       </div>
 
-      <MetersCard meters={data.meters} codex={data.codexMeters} delay={0.18} />
+      <MetersCard meters={data.meters} codex={data.codexMeters} codexUsage={data.codexUsage} delay={0.18} />
 
       {period && (
         <>

@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.5.3';
+const PULSE_VERSION = '1.6.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1514,6 +1514,8 @@ function buildSummary(sourceFilter) {
   // the local rollout logs — no opt-in needed, nothing leaves the machine.
   // Account-level, so computed from the unfiltered parse.
   payload.codexMeters = codexMetersFromSnapshot(codexRateSnapshot);
+  // Codex account TOKEN totals (all devices) — opt-in, ChatGPT endpoint.
+  payload.codexUsage = codexUsageForPayload();
   return payload;
 }
 
@@ -2040,6 +2042,171 @@ function officialFiveHourBucket() {
   return b && b.resetsAt ? b : null;
 }
 
+// ---------------------------------------------------------------------------
+// CODEX ACCOUNT TOKEN USAGE (opt-in — same switch as the account meters)
+// GET chatgpt.com/backend-api/wham/profiles/me — the endpoint behind the
+// Codex TUI's own token chart (TokenUsageProfile in openai/codex). Unlike
+// Anthropic's usage endpoint (percentages only), this returns REAL token
+// counts, account-wide across every device: lifetime, peak day, streaks and
+// per-day buckets. The ChatGPT OAuth token is read from ~/.codex/auth.json
+// READ-ONLY, never logged, and sent only to this endpoint. Polled gently —
+// the numbers move at day granularity.
+// ---------------------------------------------------------------------------
+const CODEX_USAGE_API_URL = process.env.PULSE_CODEX_USAGE_API ||
+  'https://chatgpt.com/backend-api/wham/profiles/me';
+const CODEX_USAGE_OK_MS = parseInt(process.env.PULSE_CODEX_USAGE_CACHE_MS, 10) || 10 * 60 * 1000;
+const CODEX_USAGE_ERR_MS = Math.min(CODEX_USAGE_OK_MS * 2, 20 * 60 * 1000);
+const CODEX_USAGE_429_MAX_MS = 60 * 60 * 1000;
+
+const codexUsageState = {
+  status: 'off',   // off | ok | no-login | expired | error | rate-limited
+  stats: null,     // normalized token totals — kept through errors
+  fetchedAt: null,
+  lastGoodAt: null,
+  nextAttemptAt: 0,
+  error: null,
+};
+let codexUsageInFlight = false;
+let codexUsage429Streak = 0;
+
+// ~/.codex/auth.json → { token, accountId } or null. An API-key-only login
+// (no ChatGPT tokens) can't call the account endpoint — treated as no-login.
+function readCodexAuth() {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(codexDir(), 'auth.json'), 'utf8'));
+    const t = j && j.tokens;
+    if (t && typeof t.access_token === 'string' && t.access_token) {
+      return { token: t.access_token, accountId: typeof t.account_id === 'string' ? t.account_id : null };
+    }
+  } catch (_) { /* missing/unreadable → no-login */ }
+  return null;
+}
+
+// Normalize TokenUsageProfile.stats. All fields are optional server-side;
+// aggregates (today / last 7 / last 30 days) are computed here so the UI
+// stays dumb. Bucket dates are YYYY-MM-DD (UTC day keys).
+function normalizeCodexUsage(j) {
+  const s = j && typeof j === 'object' ? (j.stats && typeof j.stats === 'object' ? j.stats : j) : null;
+  if (!s) return null;
+  const n = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+  const buckets = [];
+  if (Array.isArray(s.daily_usage_buckets)) {
+    for (const b of s.daily_usage_buckets) {
+      if (!b || typeof b.start_date !== 'string' || typeof b.tokens !== 'number' || !isFinite(b.tokens)) continue;
+      buckets.push({ date: b.start_date.slice(0, 10), tokens: b.tokens });
+    }
+    buckets.sort((a, b) => a.date.localeCompare(b.date));
+  }
+  const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const today = dayKey(Date.now());
+  const cutoff7 = dayKey(Date.now() - 6 * 24 * 3600 * 1000);
+  const cutoff30 = dayKey(Date.now() - 29 * 24 * 3600 * 1000);
+  let todayTokens = 0, last7 = 0, last30 = 0;
+  for (const b of buckets) {
+    if (b.date === today) todayTokens += b.tokens;
+    if (b.date >= cutoff7) last7 += b.tokens;
+    if (b.date >= cutoff30) last30 += b.tokens;
+  }
+  const hasSignal = buckets.length > 0 || n(s.lifetime_tokens) != null || n(s.peak_daily_tokens) != null;
+  if (!hasSignal) return null;
+  return {
+    lifetimeTokens: n(s.lifetime_tokens),
+    peakDailyTokens: n(s.peak_daily_tokens),
+    currentStreakDays: n(s.current_streak_days),
+    todayTokens, last7Tokens: last7, last30Tokens: last30,
+    buckets: buckets.slice(-30), // enough for the daily mini-chart
+  };
+}
+
+function refreshCodexUsage(done) {
+  if (!metersEnabled()) { codexUsageState.status = 'off'; return done && done(codexUsageState); }
+  if (codexUsageInFlight) return done && done(codexUsageState);
+  codexUsageInFlight = true;
+  const schedule = (ms) => { codexUsageState.nextAttemptAt = Date.now() + ms; };
+  const auth = readCodexAuth();
+  if (!auth) {
+    codexUsageInFlight = false;
+    schedule(CODEX_USAGE_OK_MS);
+    codexUsageState.status = 'no-login';
+    codexUsageState.error = 'No ChatGPT login found in ~/.codex/auth.json — run `codex` once to sign in. ' +
+      '(API-key-only logins have no account usage endpoint.)';
+    return done && done(codexUsageState);
+  }
+  const headers = {
+    'Authorization': 'Bearer ' + auth.token,
+    'Content-Type': 'application/json',
+    'User-Agent': 'pulse-usage-dashboard/' + PULSE_VERSION,
+  };
+  if (auth.accountId) headers['ChatGPT-Account-Id'] = auth.accountId;
+  fetchUrl(CODEX_USAGE_API_URL, { timeoutMs: 8000, headers }, (err, body) => {
+    codexUsageInFlight = false;
+    codexUsageState.fetchedAt = Date.now();
+    if (err) {
+      if (err.status === 429) {
+        codexUsage429Streak++;
+        let waitMs = null;
+        const ra = err.retryAfter;
+        if (ra != null) {
+          const sec = parseInt(ra, 10);
+          if (isFinite(sec) && sec > 0) waitMs = sec * 1000;
+          else { const t = Date.parse(ra); if (isFinite(t)) waitMs = t - Date.now(); }
+        }
+        if (waitMs == null || !isFinite(waitMs) || waitMs <= 0) {
+          waitMs = Math.min(CODEX_USAGE_OK_MS * Math.pow(2, codexUsage429Streak - 1), CODEX_USAGE_429_MAX_MS);
+        }
+        waitMs = Math.max(5000, Math.min(waitMs, CODEX_USAGE_429_MAX_MS));
+        schedule(waitMs);
+        codexUsageState.status = 'rate-limited';
+        codexUsageState.error = 'ChatGPT rate-limited the usage check (HTTP 429) — retrying in ~' +
+          Math.max(1, Math.round(waitMs / 60000)) + 'm.';
+        console.warn('[pulse] codex account usage: ' + codexUsageState.error);
+        return done && done(codexUsageState);
+      }
+      schedule(CODEX_USAGE_ERR_MS);
+      codexUsageState.status = /HTTP 401|HTTP 403/.test(err.message) ? 'expired' : 'error';
+      codexUsageState.error = codexUsageState.status === 'expired'
+        ? 'ChatGPT rejected the Codex login (' + err.message + ') — run `codex` in a terminal once to ' +
+          'refresh ~/.codex/auth.json. Pulse never writes credentials.'
+        : 'codex usage fetch failed: ' + err.message;
+      console.warn('[pulse] codex account usage: ' + codexUsageState.error);
+      return done && done(codexUsageState);
+    }
+    codexUsage429Streak = 0;
+    schedule(CODEX_USAGE_OK_MS);
+    let j = null;
+    try { j = JSON.parse(body); } catch (_) {}
+    const stats = normalizeCodexUsage(j);
+    if (!stats) {
+      schedule(CODEX_USAGE_ERR_MS);
+      codexUsageState.status = 'error';
+      codexUsageState.error = 'unexpected codex usage response';
+      return done && done(codexUsageState);
+    }
+    codexUsageState.stats = stats;
+    codexUsageState.status = 'ok';
+    codexUsageState.lastGoodAt = Date.now();
+    codexUsageState.error = null;
+    console.log('[pulse] codex account usage refreshed (' + stats.buckets.length + ' day bucket(s))');
+    done && done(codexUsageState);
+  });
+}
+
+// Lazily refresh on summary builds; serve the cached state immediately.
+function codexUsageForPayload() {
+  if (!metersEnabled()) return { enabled: false };
+  if (Date.now() >= (codexUsageState.nextAttemptAt || 0)) {
+    refreshCodexUsage(); // async; next poll picks it up
+  }
+  return {
+    enabled: true,
+    status: codexUsageState.status === 'off' ? 'loading' : codexUsageState.status,
+    stats: codexUsageState.stats,
+    fetchedAt: codexUsageState.fetchedAt,
+    lastGoodAt: codexUsageState.lastGoodAt,
+    error: codexUsageState.error,
+  };
+}
+
 // Lazily refresh on summary builds; serve the cached state immediately.
 function metersForPayload() {
   if (!metersEnabled()) return { enabled: false };
@@ -2272,6 +2439,10 @@ function startServer(port, host, opts) {
           metersState.buckets = [];
           metersState.error = null;
           metersState.fetchedAt = null;
+          codexUsageState.status = 'off';
+          codexUsageState.stats = null;
+          codexUsageState.error = null;
+          codexUsageState.fetchedAt = null;
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, meters: { enabled: false } }));
           return;
@@ -2280,6 +2451,9 @@ function startServer(port, host, opts) {
         credCache = { at: 0, cred: null };
         meters429Streak = 0;
         metersState.nextAttemptAt = 0;
+        codexUsage429Streak = 0;
+        codexUsageState.nextAttemptAt = 0;
+        refreshCodexUsage(); // async; the summary poll picks it up
         // Respond after the first fetch so the card can render immediately.
         refreshAccountMeters(() => {
           res.writeHead(200, { 'Content-Type': 'application/json' });

@@ -174,8 +174,9 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
       </div>
       <div className="sub" style={{ margin: '-4px 0 4px' }}>
         <b style={{ color: 'var(--text-2)' }}>Account meters</b> (opt-in) show Anthropic’s official 5-hour/weekly
-        usage — including claude.ai chats and cloud sessions no local log can see. Uses your local Claude login
-        read-only; talks only to api.anthropic.com.
+        usage — including claude.ai chats and cloud sessions no local log can see — and, with a Codex login,
+        your ChatGPT account’s real token totals across all devices. Uses your local logins read-only; talks
+        only to api.anthropic.com and chatgpt.com.
       </div>
       <div className="sub" style={{ margin: '-4px 0 12px' }}>
         Starting again is the exe: double-click <code>pulse.exe</code>, or run{' '}

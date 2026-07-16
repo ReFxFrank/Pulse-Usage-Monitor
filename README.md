@@ -186,6 +186,12 @@ Claude Code (`/usage`). Pulse can read the same gauge:
   will say so and wait (it never refreshes tokens). On macOS, Claude Code may
   keep credentials in the Keychain, which Pulse doesn't read. The endpoint is
   internal to Anthropic and could change; the card degrades gracefully.
+- **Codex token totals (same switch):** with a Codex login present
+  (`~/.codex/auth.json`, read-only), the card also shows your ChatGPT
+  account's **real token counts** — today / past 7 days / lifetime plus a
+  30-day daily mini-chart, across **all devices** — from the endpoint behind
+  Codex's own usage chart (`chatgpt.com`, polled every 10 minutes).
+  Anthropic's API exposes percentages only, so no Claude equivalent exists.
 
 ## 🧠 Reasoning-effort chips
 
@@ -263,8 +269,8 @@ amount you'll be charged. Verify current list prices at
   Pulse's own files (config, logs, effort sidecar) live in `~/.pulse`.
 - Outbound requests, exhaustively: (1) the GitHub version check (on by default,
   `--no-update-check` disables; plus the sha256-verified release download if you
-  click *Update now*), and (2) the **opt-in** account-meters call to
-  `api.anthropic.com` described above (off by default). **No usage data ever
+  click *Update now*), and (2) the **opt-in** account-meters calls to
+  `api.anthropic.com` and `chatgpt.com` described above (off by default). **No usage data ever
   leaves your machine** in either case. With updates off and meters off, Pulse
   makes zero network calls. No CDN, no fonts, no analytics, no telemetry.
 - Endpoints with side effects (stop, update) are POST-only, loopback-only,
