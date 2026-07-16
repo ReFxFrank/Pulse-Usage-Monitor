@@ -18,13 +18,14 @@
 
 const fs = require('fs');
 const http = require('http');
+const net = require('net');
 const path = require('path');
 const os = require('os');
 const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.6.1';
+const PULSE_VERSION = '1.7.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1548,6 +1549,8 @@ function buildSummary(sourceFilter) {
   payload.codexMeters = codexMetersFromSnapshot(codexRateSnapshot);
   // Codex account TOKEN totals (all devices) — opt-in, ChatGPT endpoint.
   payload.codexUsage = codexUsageForPayload();
+  // Discord Rich Presence status (opt-in) — state only, no work done here.
+  payload.discord = discordForPayload();
   return payload;
 }
 
@@ -2275,6 +2278,246 @@ function codexUsageForPayload() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// DISCORD RICH PRESENCE (opt-in, off by default)
+// Talks the Discord desktop client's local IPC protocol directly — a named
+// pipe on Windows, a Unix socket elsewhere; 8-byte header (op + length,
+// little-endian) followed by JSON. No SDK, no network: the socket is local,
+// and Discord's own client does the publishing. Zero-dependency by design.
+// NOTE: presence is PUBLIC to anyone who can see your Discord profile —
+// that's the whole point, but it's why this is opt-in and the copy says so.
+// Requires a Discord Application ID (free, discord.com/developers) in
+// config discordClientId — client IDs are public identifiers, not secrets.
+// ---------------------------------------------------------------------------
+const DISCORD_CLIENT_ID_DEFAULT = ''; // repo owner: paste the Pulse app ID here
+const DISCORD_TICK_MS = parseInt(process.env.PULSE_DISCORD_TICK_MS, 10) || 15 * 1000;
+const DISCORD_RETRY_MS = 30 * 1000;
+const PULSE_REPO_URL = 'https://github.com/ReFxFrank/Pulse-Usage-Monitor';
+
+function discordEnabled() { return readConfig().discordPresence === true; }
+function discordClientId() {
+  const c = readConfig();
+  return process.env.PULSE_DISCORD_CLIENT_ID ||
+    (typeof c.discordClientId === 'string' && /^\d{5,25}$/.test(c.discordClientId) ? c.discordClientId : '') ||
+    DISCORD_CLIENT_ID_DEFAULT;
+}
+
+const discordState = {
+  status: 'off', // off | no-client-id | connecting | ok | discord-not-found | error
+  error: null,
+  connectedAt: null,
+};
+let discordSock = null;
+let discordReady = false;
+let discordConnecting = false;
+let discordNonce = 0;
+let discordLastActivity = '';
+let discordNextAttemptAt = 0;
+
+// Candidate IPC socket paths, most likely first. Discord numbers them 0-9;
+// Linux packagings (snap/flatpak) nest them one directory deeper.
+function discordIpcCandidates() {
+  if (process.env.PULSE_DISCORD_IPC) return [process.env.PULSE_DISCORD_IPC];
+  const out = [];
+  if (process.platform === 'win32') {
+    for (let i = 0; i < 10; i++) out.push('\\\\.\\pipe\\discord-ipc-' + i);
+    return out;
+  }
+  const bases = [];
+  for (const b of [process.env.XDG_RUNTIME_DIR, process.env.TMPDIR, '/tmp']) {
+    if (b && !bases.includes(b)) bases.push(b);
+  }
+  for (const b of bases) {
+    for (const sub of ['', 'snap.discord', 'app/com.discordapp.Discord']) {
+      for (let i = 0; i < 10; i++) out.push(path.join(b, sub, 'discord-ipc-' + i));
+    }
+  }
+  return out;
+}
+
+function discordFrame(op, obj) {
+  const json = Buffer.from(JSON.stringify(obj), 'utf8');
+  const head = Buffer.alloc(8);
+  head.writeUInt32LE(op, 0);
+  head.writeUInt32LE(json.length, 4);
+  return Buffer.concat([head, json]);
+}
+
+function discordDisconnect() {
+  if (discordSock) { try { discordSock.destroy(); } catch (_) {} }
+  discordSock = null;
+  discordReady = false;
+  discordLastActivity = '';
+}
+
+// Try each candidate socket in order; first successful handshake wins.
+function discordConnect() {
+  if (discordConnecting || discordSock) return;
+  const id = discordClientId();
+  if (!id) {
+    discordState.status = 'no-client-id';
+    discordState.error = 'No Discord application ID configured — set discordClientId in ~/.pulse/config.json ' +
+      '(create one free at discord.com/developers/applications).';
+    return;
+  }
+  discordConnecting = true;
+  const candidates = discordIpcCandidates();
+  let idx = 0;
+  const tryNext = () => {
+    if (idx >= candidates.length) {
+      discordConnecting = false;
+      discordState.status = 'discord-not-found';
+      discordState.error = 'Discord desktop client not found — is it running? (Browser Discord has no local IPC.)';
+      discordNextAttemptAt = Date.now() + DISCORD_RETRY_MS;
+      return;
+    }
+    const p = candidates[idx++];
+    const sock = net.connect(p);
+    let buf = Buffer.alloc(0);
+    let settled = false;
+    const fail = () => {
+      if (settled) return; settled = true;
+      try { sock.destroy(); } catch (_) {}
+      tryNext();
+    };
+    sock.setTimeout(2000, fail);
+    sock.on('error', () => {
+      if (settled) return fail();
+      // post-handshake error: drop and retry later
+      discordDisconnect();
+      discordState.status = 'connecting';
+      discordNextAttemptAt = Date.now() + DISCORD_RETRY_MS;
+    });
+    sock.on('connect', () => {
+      sock.write(discordFrame(0, { v: 1, client_id: id }));
+    });
+    sock.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= 8) {
+        const len = buf.readUInt32LE(4);
+        if (buf.length < 8 + len) break;
+        let msg = null;
+        try { msg = JSON.parse(buf.slice(8, 8 + len).toString('utf8')); } catch (_) {}
+        buf = buf.slice(8 + len);
+        if (!msg) continue;
+        if (!settled && msg.evt === 'READY') {
+          settled = true;
+          discordConnecting = false;
+          discordSock = sock;
+          discordReady = true;
+          discordState.status = 'ok';
+          discordState.error = null;
+          discordState.connectedAt = Date.now();
+          console.log('[pulse] discord presence connected (' + p + ')');
+          sock.setTimeout(0);
+          discordTick(); // publish immediately
+        } else if (msg.evt === 'ERROR') {
+          // e.g. invalid client id — surface it, don't hammer
+          discordState.status = 'error';
+          discordState.error = 'Discord: ' + ((msg.data && msg.data.message) || 'unknown error');
+          console.warn('[pulse] discord presence: ' + discordState.error);
+        }
+      }
+    });
+    sock.on('close', () => {
+      if (!settled) return fail();
+      // Discord quit or restarted — reconnect on a later tick.
+      discordDisconnect();
+      if (discordEnabled()) {
+        discordState.status = 'connecting';
+        discordNextAttemptAt = Date.now() + 5000;
+      }
+    });
+  };
+  discordState.status = 'connecting';
+  tryNext();
+}
+
+// $ and token formatting for the activity strings (server-side, tiny).
+function fmtMoney(v) { return '$' + (v >= 100 ? v.toFixed(0) : v.toFixed(2)); }
+function fmtTok(v) {
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(0) + 'K';
+  return String(Math.round(v));
+}
+
+// Compose the activity from the same aggregates the dashboard shows.
+// buildSummary() is mtime-cached, so a 15s cadence costs ~the same as one
+// dashboard poll. Numbers shown: today's spend/tokens + live window meters.
+function buildDiscordActivity() {
+  let s = null;
+  try { s = buildSummary(null); } catch (_) { return null; }
+  if (!s) return null;
+  // Line 1: today · Line 2: overall totals. Live window meters go in the
+  // large-image tooltip (hover), where longer text is fine.
+  const details = 'Today ' + fmtTok(s.today.tokens) + ' tokens · ' + fmtMoney(s.today.cost);
+  const state = 'All-time ' + fmtTok(s.totals.tokens) + ' tokens · ' + fmtMoney(s.totals.cost) +
+    ' · ' + s.totals.sessions + ' sessions';
+  const meterBits = [];
+  if (s.meters && s.meters.enabled && s.meters.buckets) {
+    const fh = s.meters.buckets.find((b) => b.key === 'five_hour');
+    const wk = s.meters.buckets.find((b) => b.key === 'seven_day' || b.key === 'seven_day_overall');
+    if (fh) meterBits.push('Claude 5h ' + fh.pct.toFixed(0) + '%');
+    if (wk) meterBits.push('wk ' + wk.pct.toFixed(0) + '%');
+  }
+  if (s.codexMeters && s.codexMeters.buckets) {
+    const cw = s.codexMeters.buckets.find((b) => b.key === 'codex_secondary' && !b.stale);
+    if (cw) meterBits.push('Codex wk ' + cw.pct.toFixed(0) + '%');
+  }
+  return {
+    details: details.slice(0, 128),
+    state: state.slice(0, 128),
+    timestamps: { start: SERVER_START },
+    assets: {
+      large_image: readConfig().discordLargeImage || 'pulse',
+      large_text: (meterBits.length
+        ? 'Pulse · ' + meterBits.join(' · ')
+        : 'Pulse — local Claude/Codex usage dashboard').slice(0, 128),
+    },
+    buttons: [{ label: 'Get Pulse', url: PULSE_REPO_URL }],
+    instance: false,
+  };
+}
+
+function discordSetActivity(activity) {
+  if (!discordSock || !discordReady) return;
+  try {
+    discordSock.write(discordFrame(1, {
+      cmd: 'SET_ACTIVITY',
+      args: { pid: process.pid, activity },
+      nonce: String(++discordNonce),
+    }));
+  } catch (_) { discordDisconnect(); }
+}
+
+function discordTick() {
+  if (!discordEnabled()) return;
+  if (!discordSock) {
+    if (Date.now() >= discordNextAttemptAt) discordConnect();
+    return;
+  }
+  const act = buildDiscordActivity();
+  if (!act) return;
+  const key = JSON.stringify(act);
+  if (key === discordLastActivity) return; // only send real changes
+  discordLastActivity = key;
+  discordSetActivity(act);
+}
+
+let discordTimer = null;
+function startDiscordLoop() {
+  if (discordTimer) return;
+  discordTimer = setInterval(discordTick, DISCORD_TICK_MS);
+  if (discordTimer.unref) discordTimer.unref(); // never keep the process alive
+  if (discordEnabled()) discordTick();
+}
+
+function discordForPayload() {
+  if (!discordEnabled()) return { enabled: false, status: 'off' };
+  return { enabled: true, status: discordState.status === 'off' ? 'connecting' : discordState.status, error: discordState.error };
+}
+
 // Lazily refresh on summary builds; serve the cached state immediately.
 function metersForPayload() {
   if (!metersEnabled()) return { enabled: false };
@@ -2532,6 +2775,25 @@ function startServer(port, host, opts) {
         });
         return;
       }
+      if (route === '/api/discord/enable' || route === '/api/discord/disable') {
+        if (!allowMutation(req, res)) return;
+        const on = route.endsWith('enable');
+        writeConfig({ discordPresence: on });
+        console.log('[pulse] discord presence ' + (on ? 'enabled' : 'disabled') + ' from the dashboard');
+        if (!on) {
+          discordSetActivity(null); // clear the presence before dropping the socket
+          discordDisconnect();
+          discordState.status = 'off';
+          discordState.error = null;
+        } else {
+          discordNextAttemptAt = 0;
+          discordState.error = null;
+          discordTick(); // connect + publish now, not on the next 15s tick
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, discord: discordForPayload() }));
+        return;
+      }
       if (route === '/api/update/check') {
         if (!allowMutation(req, res)) return;
         checkForUpdate((st) => {
@@ -2603,6 +2865,7 @@ function startServer(port, host, opts) {
       const iv = setInterval(() => checkForUpdate(), 24 * 3600 * 1000);
       if (iv.unref) iv.unref();
     }
+    startDiscordLoop(); // no-ops every tick unless discordPresence is on
   });
   return server;
 }

@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.7.0
+
+- **Discord Rich Presence (opt-in):** show your usage as a Discord activity —
+  "Today 1.2M tokens · $4.20" / "All-time 812M tokens · $904 · 61 sessions",
+  live window meters in the hover text, elapsed time, and a "Get Pulse"
+  button. Pulse speaks the Discord desktop client's local IPC socket directly
+  (named pipe on Windows, Unix socket elsewhere — snap/flatpak paths
+  included): no SDK, zero new dependencies, and no network traffic from Pulse.
+  Setup: create a free Discord application, drop its ID in
+  `~/.pulse/config.json` (`discordClientId`), and flip **Discord presence**
+  in the Server panel. Off by default — presence is visible to anyone who can
+  see your profile, so it's a deliberate choice. Updates at most every 15 s
+  and only when the numbers change; reconnects automatically when Discord
+  restarts; disabling clears the activity instantly.
+
 ## v1.6.1
 
 - **Effort chips from the interactive `/effort` picker:** typing bare

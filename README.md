@@ -37,6 +37,10 @@ which sessions ran at which reasoning effort — all from the logs already on yo
 - 🧠 **Reasoning-effort chips** — see which sessions ran at `low → max`, ultracode, or
   fast mode. Works **out of the box, retroactively**: Pulse reads your `/effort`
   commands straight from the session transcripts.
+- 🎮 **Discord Rich Presence** (opt-in) — your live usage as a Discord activity:
+  today's and all-time tokens/spend, window meters on hover, and a "Get Pulse"
+  button. Talks the desktop client's local socket directly — zero dependencies,
+  nothing sent over the network by Pulse.
 - 🗂 **Recent sessions table** — titles, models, mode, cost, tokens, and recency.
 - 🖥 **No console window** — on Windows the exe runs hidden in the background; logs,
   version, uptime, **Stop**, and updates live in the dashboard's **Server panel**.
@@ -195,6 +199,30 @@ Claude Code (`/usage`). Pulse can read the same gauge:
   Consent is explicit: enabling meters **from the dashboard** turns on both
   providers (`{"accountMeters": true, "codexAccountUsage": true}`); a config
   that predates v1.6.0 keeps the ChatGPT call off until you re-toggle.
+
+## 🎮 Discord Rich Presence (opt-in)
+
+Show Pulse as a Discord activity — "Today 1.2M tokens · $4.20" / "All-time
+812M tokens · $904 · 61 sessions", with live window meters in the hover text
+and a **Get Pulse** button:
+
+1. Create a (free) Discord application at
+   [discord.com/developers/applications](https://discord.com/developers/applications) —
+   name it **Pulse** (the activity shows "Playing Pulse"). Optionally upload an
+   icon under *Rich Presence → Art Assets* with the key `pulse`.
+2. Put the **Application ID** in `~/.pulse/config.json`:
+   `{"discordClientId": "1234567890123456789"}` (it's a public identifier, not
+   a secret).
+3. Click **Discord presence: off → on** in the Server panel.
+
+How it works / privacy: Pulse speaks the Discord **desktop client's local IPC
+socket** directly (named pipe on Windows) — the same mechanism as every
+rich-presence tool, but with no SDK and no network traffic from Pulse; the
+Discord app does the publishing. Updates at most every 15 s, only when the
+numbers change. **Your presence is visible to anyone who can see your Discord
+profile** — that's the point, but it's why this is off by default. Requires
+the desktop app (browser Discord has no local socket). Toggle off any time;
+the activity clears immediately.
 
 ## 🧠 Reasoning-effort chips
 

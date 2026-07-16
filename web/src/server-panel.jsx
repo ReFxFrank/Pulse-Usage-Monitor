@@ -73,6 +73,21 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
     setBusy(null);
   }
 
+  async function onToggleDiscord() {
+    setBusy('discord');
+    try {
+      const on = !(data.discord && data.discord.enabled);
+      const r = await postJson('/api/discord/' + (on ? 'enable' : 'disable'));
+      const st = r && r.discord ? r.discord.status : null;
+      setNote(!on ? 'Discord presence disabled.'
+        : st === 'ok' ? 'Discord presence live — check your profile.'
+        : st === 'no-client-id' ? (r.discord.error || 'Set discordClientId in ~/.pulse/config.json first.')
+        : st === 'discord-not-found' ? 'Enabled — waiting for the Discord desktop app (is it running?).'
+        : 'Discord presence enabled — connecting…');
+    } catch (e) { setNote('Discord toggle failed: ' + e.message); }
+    setBusy(null);
+  }
+
   async function onCheck() {
     setBusy('check'); setNote(null);
     try {
@@ -159,6 +174,16 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
         <button className="btn ghost" onClick={onToggleMeters} disabled={busy === 'meters'}>
           {busy === 'meters' ? 'Saving…' : (data.meters && data.meters.enabled ? 'Disable account meters' : 'Enable account meters')}
         </button>
+        <button
+          className="btn ghost"
+          onClick={onToggleDiscord}
+          disabled={busy === 'discord'}
+          title="Shows your usage (today + all-time tokens/spend, window meters) as a Discord activity. Visible to anyone who can see your Discord profile."
+        >
+          {busy === 'discord' ? 'Saving…' : (data.discord && data.discord.enabled
+            ? 'Discord presence: on' + (data.discord.status === 'ok' ? '' : ' (' + data.discord.status + ')')
+            : 'Discord presence: off')}
+        </button>
         {gfx && (
           <button
             className="btn ghost"
@@ -177,6 +202,12 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
         usage — including claude.ai chats and cloud sessions no local log can see — and, with a Codex login,
         your ChatGPT account’s real token totals across all devices. Uses your local logins read-only; talks
         only to api.anthropic.com and chatgpt.com.
+      </div>
+      <div className="sub" style={{ margin: '-4px 0 4px' }}>
+        <b style={{ color: 'var(--text-2)' }}>Discord presence</b> (opt-in) shows your live usage — today’s and
+        all-time tokens/spend — as an activity on your Discord profile, via the desktop app’s local socket
+        (nothing sent over the network by Pulse). It’s public to anyone who can see your profile. Needs a free
+        Discord application ID in <code>~/.pulse/config.json</code> (<code>discordClientId</code>).
       </div>
       <div className="sub" style={{ margin: '-4px 0 12px' }}>
         Starting again is the exe: double-click <code>pulse.exe</code>, or run{' '}
