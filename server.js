@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.11.0';
+const PULSE_VERSION = '1.11.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -183,6 +183,30 @@ const PRICING = {
   'claude-3-5-haiku':  { input: 0.8, output: 4 },
   'claude-3-opus':     { input: 15, output: 75 },
   'claude-3-haiku':    { input: 0.25, output: 1.25 },
+
+  // Zhipu / Z.ai GLM — commonly used THROUGH Claude Code via Z.ai's
+  // Anthropic-compatible endpoint, so glm-* model ids land in ~/.claude and are
+  // priced here (Claude-style cache multipliers apply). Z.ai list prices
+  // ($/MTok), 2026-07. priceFor picks the LONGEST key that prefixes the model,
+  // so the specific variants (…-air/-airx/-x/-flash/-v) must each be listed or
+  // a longer name would fall back to the base row.
+  'glm-5.2':           { input: 1.4,  output: 4.4 },
+  'glm-5.1':           { input: 1.4,  output: 4.4 },
+  'glm-5-turbo':       { input: 1.2,  output: 4.0 },
+  'glm-5':             { input: 1,    output: 3.2 },
+  'glm-4.7-flashx':    { input: 0.07, output: 0.4 },
+  'glm-4.7-flash':     { input: 0,    output: 0 },
+  'glm-4.7':           { input: 0.6,  output: 2.2 },
+  'glm-4.6v-flash':    { input: 0,    output: 0 },
+  'glm-4.6v':          { input: 0.3,  output: 0.9 },
+  'glm-4.6':           { input: 0.6,  output: 2.2 },
+  'glm-4.5v':          { input: 0.6,  output: 1.8 },
+  'glm-4.5-airx':      { input: 1.1,  output: 4.5 },
+  'glm-4.5-air':       { input: 0.2,  output: 1.1 },
+  'glm-4.5-flash':     { input: 0,    output: 0 },
+  'glm-4.5-x':         { input: 2.2,  output: 8.9 },
+  'glm-4.5':           { input: 0.6,  output: 2.2 },
+  'glm-4-32b':         { input: 0.1,  output: 0.1 },
 
   // Claude Code's placeholder for non-billable internal turns — free, and not
   // a real model. Priced at zero and hidden from the by-model breakdown.

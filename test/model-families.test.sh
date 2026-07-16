@@ -12,6 +12,7 @@ const CASES = {
   "gpt-5.6-sol": "openai", "o3-mini": "openai", "codex-mini-latest": "openai", "chatgpt-4o": "openai", "gpt-4.1": "openai",
   "gemini-3-pro": "google", "gemini-2.5-flash": "google", "gemma-3-27b": "google",
   "deepseek-v3": "deepseek", "deepseek-r1": "deepseek",
+  "glm-4.6": "glm", "glm-4.5-air": "glm", "glm-5": "glm", "chatglm-3": "glm", "z-ai/glm-4.6": "glm",
   "llama-4-scale": "meta", "meta-llama-3": "meta",
   "grok-4": "xai", "grok-code-fast-1": "xai",
   "qwen3-max": "qwen", "qwen2.5-coder": "qwen",

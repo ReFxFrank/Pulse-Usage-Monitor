@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.11.1
+
+- **Zhipu / Z.ai GLM support:** GLM is commonly driven *through* Claude Code via
+  Z.ai's Anthropic-compatible endpoint, so `glm-*` model ids already land in the
+  `~/.claude` logs Pulse reads. Pulse now recognizes them — a Z.ai hexagon mark
+  and "Z.ai GLM" label in the By-model list and Recent sessions — and prices
+  them at Z.ai list rates (GLM-5/5.1/5.2, GLM-4.7/4.6/4.5 and the -air/-airx/-x/
+  -flash/-v variants), so GLM usage stops falling back to default pricing.
+  Longest-prefix matching keeps the variants distinct (`glm-4.5-air` ≠
+  `glm-4.5` ≠ `glm-4.5-x`).
+
 ## v1.11.0
 
 - **Model-family recognition — provider logos on every model:** each model now

@@ -73,6 +73,11 @@ export function ModelLogo({ model, size = 16 }) {
           <circle cx="12" cy="12" r="8" /><circle cx="14.5" cy="10" r="1.6" fill={color} stroke="none" />
         </g>
       );
+    case 'glm': // hexagon (Zhipu / Z.ai)
+      return svg(
+        <path d="M12 3 L20 7.5 L20 16.5 L12 21 L4 16.5 L4 7.5 Z"
+          fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" />
+      );
     case 'mistral': // stacked colored bands
       return svg(
         <g>

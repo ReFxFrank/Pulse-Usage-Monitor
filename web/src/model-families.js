@@ -8,6 +8,7 @@ export function modelFamily(model) {
   if (/^gpt|^o\d|codex|chatgpt|davinci|^text-/.test(m)) return 'openai';
   if (/gemini|^gemma|palm|bison/.test(m)) return 'google';
   if (/deepseek/.test(m)) return 'deepseek';
+  if (/glm|chatglm|zhipu|z-ai|z\.ai/.test(m)) return 'glm';
   if (/llama|^meta/.test(m)) return 'meta';
   if (/grok/.test(m)) return 'xai';
   if (/qwen/.test(m)) return 'qwen';
@@ -21,6 +22,7 @@ export const FAMILY_META = {
   openai:   { label: 'OpenAI',    color: '#0E9C7E' },
   google:   { label: 'Google',    color: '#4285F4' },
   deepseek: { label: 'DeepSeek',  color: '#4D6BFE' },
+  glm:      { label: 'Z.ai GLM',  color: '#0EA5C4' },
   meta:     { label: 'Meta',      color: '#0668E1' },
   xai:      { label: 'xAI',       color: '#c7c9cc' },
   qwen:     { label: 'Qwen',      color: '#7A6FF0' },

@@ -1,12 +1,28 @@
 #!/bin/bash
 # Pricing e2e: every current gpt-5.3–5.6 / codex-auto-review string prices at
-# exact OpenAI list rates; no unknown-model warnings in the server log.
+# exact OpenAI list rates; Zhipu GLM models (via the ~/.claude path) price at
+# Z.ai list rates; no unknown-model warnings in the server log.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 CL=$TMP/claude; CX=$TMP/codex; PH=$TMP/pulse
-mkdir -p "$CL/projects" "$CX/sessions/2026/07/15" "$PH"
+mkdir -p "$CL/projects/glm" "$CX/sessions/2026/07/15" "$PH"
+
+# GLM usage as it arrives through Claude Code (Z.ai Anthropic-compatible
+# endpoint): glm-* model ids in a ~/.claude transcript. 1M input + 1M output
+# per model -> cost = input$ + output$.
+node -e '
+const fs = require("fs");
+const now = Date.now();
+const iso = (ms) => new Date(ms).toISOString();
+const A = (min, id, model) => ({ type: "assistant", timestamp: iso(now - min * 60e3),
+  sessionId: "glm-s", requestId: "r" + id, cwd: "/p",
+  message: { id: "m" + id, model, usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+const MODELS = ["glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4.5-x", "glm-5", "glm-4.7-flash"];
+fs.writeFileSync(process.argv[1] + "/projects/glm/s.jsonl",
+  MODELS.map((m, i) => A(30 - i, i, m)).map(JSON.stringify).join("\n") + "\n");
+' "$CL"
 
 node -e '
 const fs = require("fs");
@@ -53,6 +69,12 @@ const rows = (s.periods && s.periods[0] && s.periods[0].byModel) || {};
 for (const [m, want] of Object.entries(WANT)) {
   const r = rows[m];
   ok(r && Math.abs(r.cost - want) < 0.005, m + " costs $" + want + " (got " + (r ? r.cost.toFixed(2) : "missing") + ")");
+}
+// GLM via ~/.claude — Z.ai list prices (input$ + output$ for 1M+1M):
+const GLM = { "glm-4.6": 2.8, "glm-4.5": 2.8, "glm-4.5-air": 1.3, "glm-4.5-x": 11.1, "glm-5": 4.2, "glm-4.7-flash": 0 };
+for (const [m, want] of Object.entries(GLM)) {
+  const r = rows[m];
+  ok(r && Math.abs(r.cost - want) < 0.005, "GLM " + m + " costs $" + want + " (got " + (r ? r.cost.toFixed(2) : "missing") + ")");
 }
 ok(!/unknown model/.test(log), "no unknown-model warnings in server log");
 process.exit(fail);

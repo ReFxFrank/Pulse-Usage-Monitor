@@ -53,9 +53,10 @@ which sessions ran at which reasoning effort — all from the logs already on yo
   project directory, so you can see what ultracode is actually costing you and
   which projects are heaviest.
 - 🏷 **Model-family logos** — every model row (and recent-sessions model) carries
-  a small provider mark — Anthropic, OpenAI, Google, DeepSeek, Meta, xAI, Qwen,
-  Mistral, Cohere — colored and labeled by family, shown only for models you
-  actually use.
+  a small provider mark — Anthropic, OpenAI, Google, DeepSeek, Z.ai (GLM), Meta,
+  xAI, Qwen, Mistral, Cohere — colored and labeled by family, shown only for
+  models you actually use. GLM (used through Claude Code via Z.ai's
+  Anthropic-compatible endpoint) is priced at Z.ai list rates.
 - 🗂 **Recent sessions table** — titles, models, mode, cost, tokens, and recency.
 - 🖥 **No console window** — on Windows the exe runs hidden in the background; logs,
   version, uptime, **Stop**, and updates live in the dashboard's **Server panel**.
