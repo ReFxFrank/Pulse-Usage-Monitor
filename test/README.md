@@ -1,0 +1,24 @@
+# Pulse e2e tests
+
+Each suite starts the REAL server against fixture homes in a temp dir
+(fake transcripts, rollouts, and credentials — never real ones) plus mock
+provider endpoints from `mocks/`, then asserts on `/api/summary` and, for
+Discord, on the raw IPC frames the mock receives.
+
+```
+bash test/run-all.sh          # everything (Node >= 18 + curl, localhost only)
+bash test/discord.test.sh     # one suite
+```
+
+| Suite | Covers |
+|---|---|
+| `meters.test.sh` | Claude account meters (labels, `limits[]` model-scoped rows, dedup, order) + Codex meters surviving at-limit snapshots |
+| `pricing.test.sh` | Exact OpenAI list-price rows for the current Codex lineup; no unknown-model warnings |
+| `codex-usage.test.sh` | ChatGPT account token usage: happy path, 401→expired, no-login, zero-usage=ok, corrupt auth.json (no 500, no wedge), legacy-consent gate, no token leakage into logs |
+| `discord.test.sh` | Rich Presence: handshake, rotating pages, single-line activity, clear-on-disable, shipped default app ID, Discord-not-running degradation |
+| `effort-echo.test.sh` | Effort chips from picker confirmation echoes; anti-forgery (quoted words in prompts) |
+
+Conventions when adding tests: fixture homes via `mktemp -d` + `CLAUDE_DIR` /
+`CODEX_DIR` / `PULSE_HOME` env; per-suite fixed port; fake tokens only, with
+an assertion that they never appear in server logs; `PASS`/`FAIL` lines and a
+non-zero exit on failure.
