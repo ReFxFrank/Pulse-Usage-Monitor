@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.9.0
+
+- **Status line for Claude Code:** a compact line via `pulse --statusline` —
+  `◉ Opus · ctx 25% · today $4.20 · 5h $1.10 2h24m · wk 41%`. Model and
+  context come from Claude Code's own status-line payload; today's cross-tool
+  spend, the current 5-hour block, and the official meter percentages come
+  from the running Pulse server over loopback. Because the server is the
+  single throttled poller, the line reflects **all** your usage (cli +
+  desktop + Codex) and never calls a provider endpoint itself — so it can't
+  add to the rate-limit pressure a naive per-render `/usage` call would. Runs
+  in a few ms (the feed is memoized), respects `NO_COLOR`, and is fail-open:
+  with Pulse stopped it still shows model + context, and it always exits
+  cleanly so a status-line error can never blank the row. `pulse
+  --statusline-setup` prints the settings.json snippet to paste (Pulse never
+  writes under `~/.claude`).
+
 ## v1.8.0
 
 - **Durable history — long windows survive log pruning:** Claude Code deletes

@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.8.0';
+const PULSE_VERSION = '1.9.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -88,6 +88,22 @@ function pulseHome() {
 function configFilePath() { return path.join(pulseHome(), 'config.json'); }
 function readConfig() {
   try { return JSON.parse(fs.readFileSync(configFilePath(), 'utf8')) || {}; } catch (_) { return {}; }
+}
+
+// Runtime discovery file (~/.pulse/server.json): lets the short-lived
+// `pulse --statusline` process find the running server's port. Best-effort.
+function runtimeFilePath() { return path.join(pulseHome(), 'server.json'); }
+function writeRuntimeFile(port, host) {
+  try {
+    fs.mkdirSync(pulseHome(), { recursive: true });
+    // The statusline always connects over loopback; record 127.0.0.1 unless
+    // bound loopback already, so a LAN bind still yields a reachable local URL.
+    const connectHost = (host === '0.0.0.0' || host === '::') ? '127.0.0.1' : host;
+    fs.writeFileSync(runtimeFilePath(), JSON.stringify({ port, host: connectHost, pid: process.pid, startedAt: SERVER_START, version: PULSE_VERSION }));
+  } catch (_) { /* non-fatal — statusline falls back to the default port */ }
+}
+function readRuntimeFile() {
+  try { return JSON.parse(fs.readFileSync(runtimeFilePath(), 'utf8')); } catch (_) { return null; }
 }
 function writeConfig(patch) {
   const next = { ...readConfig(), ...patch };
@@ -2751,6 +2767,47 @@ function discordForPayload() {
   return { enabled: true, status: discordState.status === 'off' ? 'connecting' : discordState.status, error: discordState.error };
 }
 
+// ---------------------------------------------------------------------------
+// STATUSLINE FEED (§7)
+// A tiny projection for `pulse --statusline` — today's cross-tool spend, the
+// current 5-hour block, and the official meter percentages Pulse already
+// caches. Memoized ~3s so the frequently-invoked statusline never triggers a
+// heavy rebuild, and (crucially) so it reads Pulse's CACHED meters rather than
+// hitting the provider endpoints itself — one shared poller, no 429 storms.
+// ---------------------------------------------------------------------------
+let statuslineMemo = { at: 0, data: null };
+function statuslineMeterPcts(s) {
+  const out = {};
+  if (s.meters && s.meters.enabled && Array.isArray(s.meters.buckets)) {
+    const fh = s.meters.buckets.find((b) => b.key === 'five_hour');
+    const wk = s.meters.buckets.find((b) => b.key === 'seven_day' || b.key === 'seven_day_overall');
+    if (fh) out.claudeFiveHour = Math.round(fh.pct);
+    if (wk) out.claudeWeekly = Math.round(wk.pct);
+  }
+  if (s.codexMeters && Array.isArray(s.codexMeters.buckets)) {
+    const cw = s.codexMeters.buckets.find((b) => b.key === 'codex_secondary' && !b.stale);
+    if (cw) out.codexWeekly = Math.round(cw.pct);
+  }
+  return out;
+}
+function statuslineData() {
+  const now = Date.now();
+  if (statuslineMemo.data && now - statuslineMemo.at < 3000) return statuslineMemo.data;
+  let s = null;
+  try { s = buildSummary(null); } catch (_) {}
+  const d = s ? {
+    today: { cost: s.today.cost, tokens: s.today.tokens },
+    week: { cost: s.week.cost, tokens: s.week.tokens },
+    block: (s.currentBlock && s.currentBlock.end > now)
+      ? { cost: s.currentBlock.cost, endsAt: s.currentBlock.end, official: !!s.currentBlock.official }
+      : null,
+    meters: statuslineMeterPcts(s),
+    version: PULSE_VERSION,
+  } : { today: null, version: PULSE_VERSION };
+  statuslineMemo = { at: now, data: d };
+  return d;
+}
+
 // Lazily refresh on summary builds; serve the cached state immediately.
 function metersForPayload() {
   if (!metersEnabled()) return { enabled: false };
@@ -2957,6 +3014,12 @@ function startServer(port, host, opts) {
         res.end(JSON.stringify(payload));
         return;
       }
+      if (route === '/api/statusline') {
+        // Slim, memoized feed for `pulse --statusline` (see STATUSLINE FEED).
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(statuslineData()));
+        return;
+      }
       if (route === '/api/logs') {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ lines: logRing }));
@@ -3079,6 +3142,9 @@ function startServer(port, host, opts) {
     console.log(`\n  Pulse v${PULSE_VERSION} — Claude Code usage dashboard`);
     console.log(`  reading (read-only): ${claudeDir()}`);
     console.log(`  listening: http://${host}:${port}${IS_DAEMON_CHILD ? '  (background)' : ''}`);
+    // Record where this instance is listening so the short-lived `--statusline`
+    // process (and any other helper) can find it. Writes ONLY to ~/.pulse.
+    writeRuntimeFile(port, host);
     // Packaged exe on Windows: open the dashboard for the user.
     if (seaApi && process.platform === 'win32' && (!opts || opts.open !== false) && LOOPBACK_HOSTS.has(host)) {
       openBrowser(port);
@@ -3428,6 +3494,142 @@ function q(s) {
   return /[\s"]/.test(s) ? '"' + s.replace(/"/g, '\\"') + '"' : s;
 }
 
+// ---------------------------------------------------------------------------
+// `--statusline` — a Claude Code status line fed by Pulse.
+// Claude Code pipes a JSON payload on stdin (model, context %, cost,
+// rate_limits, …) and displays our stdout. We enrich it with Pulse's CACHED
+// numbers — today's cross-tool spend, the current 5-hour block, official meter
+// percentages — fetched from the running server over loopback, so the status
+// line reflects ALL your usage without ever hitting a provider endpoint itself
+// (the server is the single, throttled poller). Fast, and fail-open: any error
+// still prints a useful line from the stdin payload alone, and we always exit 0
+// (a non-zero exit blanks the status line).
+// ---------------------------------------------------------------------------
+function slHttpGetJson(url, timeoutMs, cb) {
+  let done = false;
+  const finish = (e, d) => { if (!done) { done = true; cb(e, d); } };
+  try {
+    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return finish(new Error('HTTP ' + res.statusCode)); }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy(new Error('too large')); });
+      res.on('end', () => { try { finish(null, JSON.parse(body)); } catch (e) { finish(e); } });
+      res.on('error', finish);
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', finish);
+  } catch (e) { finish(e); }
+}
+
+function slDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  if (h > 0) return h + 'h' + (m ? m + 'm' : '');
+  if (m > 0) return m + 'm';
+  return s + 's';
+}
+function formatStatusline(ctx, data) {
+  const noColor = !!process.env.NO_COLOR;
+  const wrap = (open, s) => noColor ? s : '\x1b[' + open + 'm' + s + '\x1b[0m';
+  const dim = (s) => wrap('2', s);
+  const bold = (s) => wrap('1', s);
+  const accent = (s) => wrap('38;5;141', s);
+  const heat = (pct) => (s) => wrap(pct >= 85 ? '38;5;167' : pct >= 60 ? '38;5;179' : '38;5;71', s);
+  const seg = [];
+
+  const model = (ctx.model && (ctx.model.display_name || ctx.model.id)) || 'Claude';
+  seg.push(accent('◉ ' + model));
+
+  const cw = ctx.context_window;
+  if (cw && typeof cw.used_percentage === 'number') {
+    const p = Math.round(cw.used_percentage);
+    seg.push(dim('ctx ') + heat(p)(p + '%'));
+  }
+
+  if (data && data.today) {
+    seg.push(dim('today ') + bold(fmtMoney(data.today.cost)));
+    if (data.block) {
+      const left = data.block.endsAt - Date.now();
+      seg.push(dim('5h ') + bold(fmtMoney(data.block.cost)) + (left > 0 ? dim(' ' + slDur(left)) : ''));
+    }
+  }
+
+  // Weekly %: prefer Pulse's official meter (all devices); fall back to the
+  // rate_limits Claude Code itself passes on stdin.
+  let wk = data && data.meters && typeof data.meters.claudeWeekly === 'number' ? data.meters.claudeWeekly : null;
+  if (wk == null && ctx.rate_limits && ctx.rate_limits.seven_day && typeof ctx.rate_limits.seven_day.used_percentage === 'number') {
+    wk = Math.round(ctx.rate_limits.seven_day.used_percentage);
+  }
+  if (wk != null) seg.push(dim('wk ') + heat(wk)(wk + '%'));
+  if (data && data.meters && typeof data.meters.codexWeekly === 'number') {
+    seg.push(dim('cx ') + heat(data.meters.codexWeekly)(data.meters.codexWeekly + '%'));
+  }
+
+  return seg.join(noColor ? ' · ' : dim(' · '));
+}
+
+function runStatusline() {
+  let input = '';
+  let finished = false;
+  const guard = setTimeout(() => finish(), 1500); // stdin should be instant; never hang the shell
+  const finish = () => {
+    if (finished) return; finished = true; clearTimeout(guard);
+    let ctx = {};
+    try { ctx = JSON.parse(input) || {}; } catch (_) {}
+    const rt = readRuntimeFile();
+    const host = (rt && rt.host) || '127.0.0.1';
+    const port = (rt && rt.port) || (process.env.PORT ? parseInt(process.env.PORT, 10) : 4747);
+    slHttpGetJson('http://' + host + ':' + port + '/api/statusline', 700, (err, data) => {
+      let line;
+      try { line = formatStatusline(ctx, err ? null : data); }
+      catch (_) { line = (ctx.model && (ctx.model.display_name || ctx.model.id)) || 'Pulse'; }
+      // Exit from the write callback: process.exit() before stdout (a pipe)
+      // flushes would truncate the line to nothing. A short backstop timer
+      // guarantees we still exit if the callback never fires.
+      const bail = setTimeout(() => process.exit(0), 400);
+      if (bail.unref) bail.unref();
+      try { process.stdout.write(line + '\n', () => process.exit(0)); }
+      catch (_) { process.exit(0); }
+    });
+  };
+  try {
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (d) => { input += d; if (input.length > 1e6) finish(); });
+    process.stdin.on('end', finish);
+    process.stdin.on('error', finish);
+  } catch (_) { finish(); }
+}
+
+// `--statusline-setup` — print (never write) the settings.json snippet. As with
+// --effort-setup, Pulse never edits ~/.claude itself.
+function statuslineSetup() {
+  const cmdValue = seaApi
+    ? `${q(process.execPath)} --statusline`
+    : `${q(process.execPath)} ${q(__filename)} --statusline`;
+  const snippet = { statusLine: { type: 'command', command: cmdValue, padding: 0, refreshInterval: 30 } };
+  const settingsPath = path.join(claudeDir(), 'settings.json');
+  console.log('\nPulse — status line setup');
+  console.log('─'.repeat(64));
+  console.log('Adds a Claude Code status line fed by Pulse: your model + context');
+  console.log('from Claude Code, plus today\'s cross-tool spend, the current 5-hour');
+  console.log('block, and official meter %s that Pulse already caches (so the status');
+  console.log('line never polls a provider endpoint itself).');
+  console.log('');
+  console.log(`1. Make sure Pulse is running (the status line reads it over loopback).`);
+  console.log('');
+  console.log(`2. Open:  ${settingsPath}`);
+  console.log('   (create it if missing; merge this key if the file already exists)');
+  console.log('');
+  console.log('3. Add:');
+  console.log(JSON.stringify(snippet, null, 2));
+  console.log('');
+  console.log('4. Start a new Claude Code session. Pulse never writes under ~/.claude;');
+  console.log('   if Pulse is stopped the line still shows model + context from Claude');
+  console.log('   Code alone. Set NO_COLOR=1 to disable the ANSI colors.');
+  console.log('');
+}
+
 function parseArgs(argv) {
   const out = {
     port: null, host: null, inspectSchema: false, modeHook: false, effortSetup: false,
@@ -3443,6 +3645,8 @@ function parseArgs(argv) {
     else if (a === '--inspect-schema') { out.inspectSchema = true; }
     else if (a === '--mode-hook') { out.modeHook = true; }
     else if (a === '--effort-setup') { out.effortSetup = true; }
+    else if (a === '--statusline') { out.statusline = true; }
+    else if (a === '--statusline-setup') { out.statuslineSetup = true; }
     else if (a === '--no-open') { out.noOpen = true; }
     else if (a === '--no-daemon') { out.noDaemon = true; }
     else if (a === '--daemon-child') { out.daemonChild = true; }
@@ -3538,6 +3742,9 @@ function main() {
     console.log('                    warning it prints; prefer an SSH tunnel instead.');
     console.log('  --effort-setup    print the Claude Code hooks snippet that enables');
     console.log('                    reasoning-effort logging (Pulse never edits ~/.claude)');
+    console.log('  --statusline      run as a Claude Code status line (reads the JSON on');
+    console.log('                    stdin, prints a line enriched with Pulse\'s numbers)');
+    console.log('  --statusline-setup  print the settings.json snippet to enable it');
     console.log('  --mode-hook       (internal) run as a Claude Code hook — records the');
     console.log('                    effort level to ' + modesFilePath());
     console.log('  --no-open         do not auto-open the browser (packaged exe only)');
@@ -3558,6 +3765,8 @@ function main() {
   }
   if (args.version) { console.log('pulse v' + PULSE_VERSION); return; }
   if (args.modeHook) { runModeHook(); return; }
+  if (args.statusline) { runStatusline(); return; }
+  if (args.statuslineSetup) { statuslineSetup(); return; }
   if (args.effortSetup) { effortSetup(); return; }
   if (args.inspectSchema) { inspectSchema(); return; }
   if (args.installShortcuts) { installShortcuts(); return; }

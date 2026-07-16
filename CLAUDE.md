@@ -55,6 +55,7 @@ the old name; git remotes redirect).
 | Discord Rich Presence (opt-in) | `discordConnect` (hand-rolled IPC: 8-byte LE header + JSON over named pipe / unix socket, candidates incl. snap/flatpak), `buildDiscordActivity` (rotating pages Today / Past 7 days / All-time, wall-clock derived), `DISCORD_CLIENT_ID_DEFAULT` = the official Pulse app (public identifier) |
 | Self-update | `checkForUpdate`, `installUpdate` — sha256 digest fail-closed, rename swap + rollback, no downgrades |
 | Windows daemon | `--daemon-child`, `windowsHide`, `~/.pulse/pulse.log`, `--stop`, `--install-shortcuts` |
+| Status line | `--statusline` (reads Claude Code's stdin JSON, fetches slim `/api/statusline` from the running server via `~/.pulse/server.json` port, prints an ANSI line; fail-open, always exit 0), `statuslineData`/`statuslineMemo` (3s), `--statusline-setup` prints the settings.json snippet (never writes `~/.claude`); `NO_COLOR` respected |
 
 ## Config (`~/.pulse/config.json`) and env overrides
 

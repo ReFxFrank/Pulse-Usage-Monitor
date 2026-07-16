@@ -44,6 +44,10 @@ which sessions ran at which reasoning effort — all from the logs already on yo
 - 🗄 **Durable history** — Pulse archives each past day's totals to `~/.pulse`,
   so the 90/180-day windows and all-time totals survive Claude Code's ~30-day
   transcript pruning. On by default; writes only to `~/.pulse`.
+- 📟 **Status line for Claude Code** — a compact line (`pulse --statusline`)
+  showing your model + context alongside Pulse's today spend, current 5-hour
+  block, and official meter %s. Fed by the running server over loopback, so it
+  reflects **all** your usage and never polls a provider endpoint itself.
 - 🗂 **Recent sessions table** — titles, models, mode, cost, tokens, and recency.
 - 🖥 **No console window** — on Windows the exe runs hidden in the background; logs,
   version, uptime, **Stop**, and updates live in the dashboard's **Server panel**.
@@ -224,6 +228,35 @@ numbers change. **Your presence is visible to anyone who can see your Discord
 profile** — that's the point, but it's why this is off by default. Requires
 the desktop app (browser Discord has no local socket). Toggle off any time;
 the activity clears immediately.
+
+## 📟 Status line for Claude Code
+
+Show Pulse's numbers right in Claude Code's status line:
+
+```
+◉ Opus · ctx 25% · today $4.20 · 5h $1.10 2h24m · wk 41%
+```
+
+Model and context come from Claude Code; **today's cross-tool spend, the
+current 5-hour block, and the official meter %s** come from the running Pulse
+server (fetched over loopback). Because the server is the single, throttled
+poller, the status line reflects *all* your usage — cli + desktop + Codex —
+and **never hits a provider endpoint itself** (so it can't add to the
+rate-limit pressure that a naive per-render `/usage` call would).
+
+Setup: run `pulse --statusline-setup` and paste the printed snippet into
+`~/.claude/settings.json` (Pulse never writes there itself):
+
+```json
+{
+  "statusLine": { "type": "command", "command": "…/pulse --statusline", "padding": 0, "refreshInterval": 30 }
+}
+```
+
+Fail-open by design: if Pulse isn't running the line still shows model +
+context from Claude Code alone, and it always exits cleanly (a status-line
+command that errors would blank the line). `NO_COLOR=1` disables the ANSI
+colors.
 
 ## 🧠 Reasoning-effort chips
 
