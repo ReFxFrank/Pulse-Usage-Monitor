@@ -20,7 +20,8 @@ bash test/discord.test.sh     # one suite
 | `history.test.sh` | Retention: sealing past days (never today), non-shrinking re-seal, per-cell recovery of a pruned cell, dedup (no double count), window scoping, `history:false` disable |
 | `statusline.test.sh` | `--statusline`: server-fed enrichment (today/5h/meter %), server-down fail-open, `NO_COLOR`, single line, always exit 0 |
 | `analytics.test.sh` | Per-period spend by effort level (incl. ultracode/default) and by project (sorted by cost, session counts, `liveCost`) |
-| `model-families.test.sh` | Model-string → provider-family classifier (Anthropic/OpenAI/Google/DeepSeek/Meta/xAI/Qwen/Mistral/Cohere/other) + family metadata |
+| `model-families.test.sh` | Model-string → provider-family classifier (Anthropic/OpenAI/Google/DeepSeek/GLM/Meta/xAI/Qwen/Mistral/Cohere/other) + family metadata |
+| `meters-polling.test.sh` | Polling discipline: dashboard drives the usage-endpoint refresh; status line / Discord only trickle it (counting mock verifies no background polling) |
 
 Conventions when adding tests: fixture homes via `mktemp -d` + `CLAUDE_DIR` /
 `CODEX_DIR` / `PULSE_HOME` env; per-suite fixed port; fake tokens only, with

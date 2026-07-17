@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.11.1';
+const PULSE_VERSION = '1.11.2';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1804,7 +1804,13 @@ function collectTitles(obj, fileName, map) {
 // The WHOLE payload (blocks, burn, periods, sessions) reflects the filtered
 // view, while allSources/allModels stay unfiltered so the filter UI can list
 // every option and colors stay stable across filter changes.
-function buildSummary(sourceFilter) {
+// opts.background — true when a background consumer (status line, Discord)
+// drives the build rather than the dashboard. Background builds only TRICKLE
+// the account-meter refresh (see metersForPayload); the dashboard drives it at
+// the normal cadence. This keeps Pulse from polling the shared, rate-limited
+// usage endpoint every couple of minutes around the clock.
+function buildSummary(sourceFilter, opts) {
+  const background = !!(opts && opts.background);
   const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount, codexFileCount, codexRateSnapshot } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
@@ -1849,13 +1855,13 @@ function buildSummary(sourceFilter) {
   payload.daemon = IS_DAEMON_CHILD;
   payload.packaged = !!seaApi;
   payload.update = updateState;
-  payload.meters = metersForPayload();
+  payload.meters = metersForPayload(background);
   // Codex official meters come from rate_limits snapshots already present in
   // the local rollout logs — no opt-in needed, nothing leaves the machine.
   // Account-level, so computed from the unfiltered parse.
   payload.codexMeters = codexMetersFromSnapshot(codexRateSnapshot);
   // Codex account TOKEN totals (all devices) — opt-in, ChatGPT endpoint.
-  payload.codexUsage = codexUsageForPayload();
+  payload.codexUsage = codexUsageForPayload(background);
   // Discord Rich Presence status (opt-in) — state only, no work done here.
   payload.discord = discordForPayload();
   return payload;
@@ -2570,9 +2576,13 @@ function refreshCodexUsage(done) {
 }
 
 // Lazily refresh on summary builds; serve the cached state immediately.
-function codexUsageForPayload() {
+// Same background trickle as the Claude meters — a status line / Discord build
+// only pokes chatgpt.com when the token totals are already stale.
+function codexUsageForPayload(background) {
   if (!codexUsageEnabled()) return { enabled: false };
-  if (Date.now() >= (codexUsageState.nextAttemptAt || 0)) {
+  const due = Date.now() >= (codexUsageState.nextAttemptAt || 0);
+  const bgOk = !background || (Date.now() - (codexUsageState.fetchedAt || 0) >= BACKGROUND_METERS_MS);
+  if (due && bgOk) {
     refreshCodexUsage(); // async; next poll picks it up
   }
   return {
@@ -2770,7 +2780,7 @@ function discordRotateMs() {
 
 function buildDiscordActivity() {
   let s = null;
-  try { s = buildSummary(null); } catch (_) { return null; }
+  try { s = buildSummary(null, { background: true }); } catch (_) { return null; }
   if (!s) return null;
   // One period per page — Today / Past 7 days / All-time — alternating on
   // the shared clock. Single line: tokens + spend, nothing else.
@@ -2871,7 +2881,7 @@ function statuslineData() {
   const now = Date.now();
   if (statuslineMemo.data && now - statuslineMemo.at < 3000) return statuslineMemo.data;
   let s = null;
-  try { s = buildSummary(null); } catch (_) {}
+  try { s = buildSummary(null, { background: true }); } catch (_) {}
   const d = s ? {
     today: { cost: s.today.cost, tokens: s.today.tokens },
     week: { cost: s.week.cost, tokens: s.week.tokens },
@@ -2885,11 +2895,21 @@ function statuslineData() {
   return d;
 }
 
+// How stale a background consumer (status line / Discord) tolerates before it
+// trickles a refresh. The dashboard refreshes at the normal cadence
+// (METERS_OK_MS); background paths only poll the shared usage endpoint this
+// rarely, so Pulse isn't hammering it 24/7 when no one's watching the card.
+const BACKGROUND_METERS_MS = 15 * 60 * 1000;
+
 // Lazily refresh on summary builds; serve the cached state immediately.
-function metersForPayload() {
+// background=true (status line, Discord) only triggers a refresh when the data
+// is already quite stale; the dashboard (background=false) uses the normal gate.
+function metersForPayload(background) {
   if (!metersEnabled()) return { enabled: false };
-  if (Date.now() >= (metersState.nextAttemptAt || 0)) {
-    refreshAccountMeters(); // async; next 10s poll picks it up
+  const due = Date.now() >= (metersState.nextAttemptAt || 0);
+  const bgOk = !background || (Date.now() - (metersState.fetchedAt || 0) >= BACKGROUND_METERS_MS);
+  if (due && bgOk) {
+    refreshAccountMeters(); // async; next poll picks it up
   }
   return {
     enabled: true,

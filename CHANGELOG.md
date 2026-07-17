@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.11.2
+
+- **Meters stop background-polling the usage endpoint (fewer HTTP 429s):** the
+  account-meters refresh used to fire from *any* summary build — including the
+  status line (invoked constantly by Claude Code) and the Discord tick — so
+  Pulse hit Anthropic's shared, rate-limited `/usage` endpoint every ~2 minutes
+  around the clock even with the dashboard closed. Now the dashboard drives the
+  refresh at the normal cadence while background consumers only **trickle** it
+  (at most every 15 minutes), cutting Pulse's background footprint on that
+  endpoint by ~7×. The same trickle applies to the Codex token-usage call
+  (chatgpt.com). Meters still refresh promptly whenever the dashboard is open;
+  the status line shows the last-known figures between dashboard views.
+
 ## v1.11.1
 
 - **Zhipu / Z.ai GLM support:** GLM is commonly driven *through* Claude Code via
