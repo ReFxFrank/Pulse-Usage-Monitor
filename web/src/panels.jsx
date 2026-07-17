@@ -208,15 +208,13 @@ export function EffortBadges({ efforts, ultracode, align = 'flex-end' }) {
 // notifyState lets us offer to turn on desktop notifications inline.
 export function AlertsBar({ alerts, notifyState, onEnableNotify }) {
   if (!alerts || !alerts.length) return null;
-  // alerts are sorted most-urgent-first, so alerts[0] is the worst window. At
-  // 100% you've *reached* the limit, not "approaching" it — the headline must
-  // match the number shown (which is rounded), so decide off the rounded pct.
-  const atLimit = Math.round(alerts[0].pct) >= 100;
+  // Only windows still *approaching* a limit reach here — the server drops any
+  // that are already maxed out (a limit you've hit isn't one you're nearing).
   return (
     <div className="alertbar" role="status">
       <span className="alertdot" />
       <span className="alerttxt">
-        <b>{atLimit ? 'Limit reached —' : 'Approaching a limit —'}</b>{' '}
+        <b>Approaching a limit —</b>{' '}
         {alerts.map((a) => `${a.label} ${Math.round(a.pct)}%`).join(' · ')}
       </span>
       {notifyState === 'default' && (

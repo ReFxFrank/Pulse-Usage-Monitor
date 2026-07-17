@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.12.2
+
+- **Limit alerts drop maxed-out windows:** a window that's already at 100% is a
+  limit you've *hit*, not one you're *approaching* — so it no longer appears in
+  the alerts banner (and stops firing "approaching" desktop notifications). This
+  keeps a reached limit from sitting stacked next to windows that are genuinely
+  creeping up. The window still shows, at 100%, in the Account-limits gauges;
+  it's only removed from the warning banner. (Supersedes v1.12.1's "Limit
+  reached" wording, which is no longer reachable.)
+
 ## v1.12.1
 
 - **Limit-alerts wording at 100%:** when the most-urgent window is maxed out the

@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.12.1';
+const PULSE_VERSION = '1.12.2';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1906,6 +1906,11 @@ function computeAlerts(meters, codexMeters) {
   const out = [];
   const consider = (b, provider) => {
     if (!b || typeof b.pct !== 'number' || b.stale) return;
+    // A window that's already maxed out isn't one you're *approaching* — you've
+    // hit it. Drop it from the warning banner (and its notifications) so a
+    // reached limit doesn't sit stacked next to genuinely-approaching windows.
+    // Keyed off the rounded pct so it matches the number the UI shows.
+    if (Math.round(b.pct) >= 100) return;
     if (b.pct < lowest) return;
     // Highest threshold this window has reached.
     let hit = null;

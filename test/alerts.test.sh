@@ -34,6 +34,11 @@ http.createServer((q, s) => {
     five_hour:      { utilization: 0.82, resets_at: new Date(Date.now()+2*3600e3).toISOString() },
     seven_day:      { utilization: 0.96, resets_at: new Date(Date.now()+3*86400e3).toISOString() },
     seven_day_opus: { utilization: 0.40, resets_at: new Date(Date.now()+3*86400e3).toISOString() },
+    // model-scoped Fable weekly MAXED OUT — a reached limit, must be dropped
+    // from the alerts banner (you have hit it, not approaching it).
+    limits: [ { kind: "weekly_scoped", group: "g", percent: 100,
+                resets_at: new Date(Date.now()+4*86400e3).toISOString(),
+                scope: { model: { display_name: "Fable" } } } ],
   }));
 }).listen(4877, "127.0.0.1", () => console.log("mock up"));
 ' >/dev/null 2>&1 &
@@ -75,6 +80,12 @@ ok(by["codex:codex_secondary"] && by["codex:codex_secondary"].threshold === 80 &
    "Codex weekly 90% -> alert, provider codex (" + JSON.stringify(by["codex:codex_secondary"] && {t:by["codex:codex_secondary"].threshold,p:by["codex:codex_secondary"].provider}) + ")");
 ok(/^Claude · /.test((by["claude:seven_day"]||{}).label || "") && /^Codex · /.test((by["codex:codex_secondary"]||{}).label || ""), "labels carry provider prefix");
 ok(A.length >= 3 && A[0].pct >= A[A.length-1].pct, "sorted most-urgent-first (" + A.map(a=>Math.round(a.pct)).join(">=") + ")");
+
+// maxed-out windows are dropped from the banner (reached, not approaching).
+const buckets = (require(TMP + "/def.json").meters || {}).buckets || [];
+const fableBucket = buckets.find((b) => b.key === "model_scoped:fable");
+ok(fableBucket && Math.round(fableBucket.pct) === 100, "Fable weekly meter IS present at 100% (bucket exists)");
+ok(!by["claude:model_scoped:fable"], "Fable 100% -> NOT in alerts (a reached limit is dropped from the banner)");
 
 const off = require(TMP + "/off.json").alerts;
 ok(Array.isArray(off) && off.length === 0, "alerts:false -> no alerts (" + (off && off.length) + ")");
