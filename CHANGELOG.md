@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.12.1
+
+- **Limit-alerts wording at 100%:** when the most-urgent window is maxed out the
+  banner now reads **"Limit reached —"** instead of "Approaching a limit —"
+  (you're not *approaching* a limit you've already hit). The headline follows
+  the worst window shown, so it stays consistent with the percentages listed.
+
 ## v1.12.0
 
 - **Limit alerts:** Pulse now flags every usage window that crosses a warning
