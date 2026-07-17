@@ -204,6 +204,57 @@ export function EffortBadges({ efforts, ultracode, align = 'flex-end' }) {
   );
 }
 
+// Limit-alerts banner: the windows currently at/above a warning threshold.
+// notifyState lets us offer to turn on desktop notifications inline.
+export function AlertsBar({ alerts, notifyState, onEnableNotify }) {
+  if (!alerts || !alerts.length) return null;
+  return (
+    <div className="alertbar" role="status">
+      <span className="alertdot" />
+      <span className="alerttxt">
+        <b>Approaching a limit —</b>{' '}
+        {alerts.map((a) => `${a.label} ${Math.round(a.pct)}%`).join(' · ')}
+      </span>
+      {notifyState === 'default' && (
+        <button className="btn ghost albtn" onClick={onEnableNotify}>Enable desktop alerts</button>
+      )}
+    </div>
+  );
+}
+
+// Activity heatmap: weekday × hour, shaded by cost (messages on hover). A model
+// only appears if it's in the logs, so the grid reflects real working hours.
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+export function Heatmap({ heatmap }) {
+  if (!heatmap || !heatmap.grid) return null;
+  const max = heatmap.maxCost > 0 ? heatmap.maxCost : 1;
+  const HOURS = [0, 3, 6, 9, 12, 15, 18, 21];
+  const hourLabel = (h) => (h === 0 ? '12a' : h === 12 ? '12p' : h < 12 ? h + 'a' : (h - 12) + 'p');
+  return (
+    <div className="heatmap">
+      <div className="hm-hours">
+        <span className="hm-daylabel" />
+        {Array.from({ length: 24 }, (_, h) => (
+          <span key={h} className="hm-hlabel">{HOURS.includes(h) ? hourLabel(h) : ''}</span>
+        ))}
+      </div>
+      {heatmap.grid.map((row, d) => (
+        <div className="hm-row" key={d}>
+          <span className="hm-daylabel">{WEEKDAYS[d]}</span>
+          {row.map((c, h) => {
+            const intensity = c.cost > 0 ? 0.14 + 0.86 * Math.sqrt(c.cost / max) : 0;
+            return (
+              <InfoTip key={h} text={`${WEEKDAYS[d]} ${hourLabel(h)}–${hourLabel((h + 1) % 24)} — ${money2(c.cost)} · ${tokens(c.tokens)} tokens · ${num(c.messages)} msgs`}>
+                <span className="hm-cell" style={{ background: c.cost > 0 ? `rgba(155,140,255,${intensity})` : undefined }} />
+              </InfoTip>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // horizontal bars for by-model / by-source. `modelLogos` swaps the color chip
 // for a provider mark (recognized per model family) on the by-model list.
 export function BarList({ rows, modelLogos = false }) {

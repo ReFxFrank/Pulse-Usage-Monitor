@@ -187,6 +187,43 @@ export function applyGraphicsMode(mode) {
   return lite;
 }
 
+// ---- limit alerts: desktop notifications, de-duplicated per reset cycle ----
+// The server reports which windows are currently at/above a threshold; we fire
+// a browser (OS) notification the first time we see each (window, threshold,
+// reset-cycle) and remember it so we don't repeat until the window resets or
+// escalates to a higher threshold.
+const ALERTED_KEY = 'pulse-alerted';
+function alertKey(a) { return a.key + '|' + a.threshold + '|' + (a.resetsAt || 0); }
+export function notifyPermission() {
+  return (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+}
+export function requestAlertPermission() {
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    try { Notification.requestPermission(); } catch (_) {}
+  }
+}
+export function fireAlertNotifications(alerts) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  if (!Array.isArray(alerts) || !alerts.length) return;
+  let seen;
+  try { seen = new Set(JSON.parse(localStorage.getItem(ALERTED_KEY) || '[]')); } catch (_) { seen = new Set(); }
+  let changed = false;
+  for (const a of alerts) {
+    const k = alertKey(a);
+    if (seen.has(k)) continue;
+    seen.add(k); changed = true;
+    try {
+      new Notification('Pulse — usage alert', {
+        body: `${a.label} is at ${Math.round(a.pct)}% (≥ ${a.threshold}%)`,
+        tag: 'pulse-' + a.key, // one live toast per window; escalation replaces it
+      });
+    } catch (_) {}
+  }
+  if (changed) {
+    try { localStorage.setItem(ALERTED_KEY, JSON.stringify(Array.from(seen).slice(-200))); } catch (_) {}
+  }
+}
+
 // Re-render helper that ticks every second (for live countdowns / relative time).
 export function useTick(ms = 1000) {
   const [, set] = useState(0);

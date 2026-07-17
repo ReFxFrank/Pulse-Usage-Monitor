@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.11.2';
+const PULSE_VERSION = '1.12.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1327,6 +1327,19 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     activeProvider = asc[asc.length - 1].source === 'codex' ? 'codex' : 'claude';
   }
 
+  // Activity heatmap — cost/tokens/messages by local weekday (0=Sun … 6=Sat) ×
+  // hour (0–23), over all live entries. Reveals when you actually work.
+  const hmGrid = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => ({ cost: 0, tokens: 0, messages: 0 })));
+  let hmMaxCost = 0, hmMaxMsgs = 0;
+  for (const e of asc) {
+    const d = new Date(e.ts);
+    const cell = hmGrid[d.getDay()][d.getHours()];
+    cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
+    if (cell.cost > hmMaxCost) hmMaxCost = cell.cost;
+    if (cell.messages > hmMaxMsgs) hmMaxMsgs = cell.messages;
+  }
+  const heatmap = { grid: hmGrid, maxCost: hmMaxCost, maxMessages: hmMaxMsgs };
+
   const payload = {
     generatedAt: now,
     latestTs: asc.length ? asc[asc.length - 1].ts : null, // newest record on this machine
@@ -1341,6 +1354,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     allSources,
     allModels,
     recentSessions,
+    heatmap,
     pricing: buildPricingView(now),
     hasData: entries.length > 0,
     // effort/mode sidecar status — lets the UI hint at setup when absent
@@ -1862,9 +1876,48 @@ function buildSummary(sourceFilter, opts) {
   payload.codexMeters = codexMetersFromSnapshot(codexRateSnapshot);
   // Codex account TOKEN totals (all devices) — opt-in, ChatGPT endpoint.
   payload.codexUsage = codexUsageForPayload(background);
+  // Limit alerts: which windows are at/above a warning threshold right now.
+  // Stateless — the dashboard de-dups notifications per reset cycle client-side.
+  payload.alerts = computeAlerts(payload.meters, payload.codexMeters);
   // Discord Rich Presence status (opt-in) — state only, no work done here.
   payload.discord = discordForPayload();
   return payload;
+}
+
+// ---------------------------------------------------------------------------
+// LIMIT ALERTS
+// Flag any usage window (Claude 5h/weekly/model-scoped, Codex session/weekly)
+// that has crossed a warning threshold, so the dashboard can warn you before
+// you hit a cap. Thresholds are configurable; on by default (disable with
+// {"alerts": false}). This is purely a projection of the meters Pulse already
+// has — account meters are account-wide, so alerts cover EVERY surface
+// (Claude Code, claude.ai, Cowork, other devices), not just this machine.
+// ---------------------------------------------------------------------------
+function alertsEnabled() { return readConfig().alerts !== false; }
+function alertThresholds() {
+  const c = readConfig().alertThresholds;
+  const list = Array.isArray(c) ? c.filter((n) => typeof n === 'number' && n > 0 && n <= 100) : [];
+  return (list.length ? list : [80, 95]).slice().sort((a, b) => a - b);
+}
+function computeAlerts(meters, codexMeters) {
+  if (!alertsEnabled()) return [];
+  const thresholds = alertThresholds();
+  const lowest = thresholds[0];
+  const out = [];
+  const consider = (b, provider) => {
+    if (!b || typeof b.pct !== 'number' || b.stale) return;
+    if (b.pct < lowest) return;
+    // Highest threshold this window has reached.
+    let hit = null;
+    for (const t of thresholds) if (b.pct >= t) hit = t;
+    if (hit == null) return;
+    out.push({ key: (provider === 'codex' ? 'codex:' : 'claude:') + b.key, label: b.label, pct: b.pct, threshold: hit, resetsAt: b.resetsAt || null, provider });
+  };
+  if (meters && meters.enabled && Array.isArray(meters.buckets)) for (const b of meters.buckets) consider(b, 'claude');
+  if (codexMeters && Array.isArray(codexMeters.buckets)) for (const b of codexMeters.buckets) consider(b, 'codex');
+  // Most urgent first.
+  out.sort((a, b) => b.pct - a.pct);
+  return out;
 }
 
 // ---------------------------------------------------------------------------

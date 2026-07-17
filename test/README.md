@@ -22,6 +22,8 @@ bash test/discord.test.sh     # one suite
 | `analytics.test.sh` | Per-period spend by effort level (incl. ultracode/default) and by project (sorted by cost, session counts, `liveCost`) |
 | `model-families.test.sh` | Model-string → provider-family classifier (Anthropic/OpenAI/Google/DeepSeek/GLM/Meta/xAI/Qwen/Mistral/Cohere/other) + family metadata |
 | `meters-polling.test.sh` | Polling discipline: dashboard drives the usage-endpoint refresh; status line / Discord only trickle it (counting mock verifies no background polling) |
+| `alerts.test.sh` | Limit alerts: Claude meters + Codex snapshot windows at/above a threshold are flagged, sorted most-urgent-first, provider-labelled; thresholds configurable; `alerts:false` disables |
+| `heatmap.test.sh` | Activity heatmap: entries land in the right weekday×hour cell (local time), cells sum cost/tokens/messages, max tracking correct |
 
 Conventions when adding tests: fixture homes via `mktemp -d` + `CLAUDE_DIR` /
 `CODEX_DIR` / `PULSE_HOME` env; per-suite fixed port; fake tokens only, with

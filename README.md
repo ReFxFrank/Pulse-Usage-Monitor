@@ -34,6 +34,15 @@ which sessions ran at which reasoning effort — all from the logs already on yo
   claude.ai chats, cloud sessions, other devices) and your ChatGPT plan's
   **Codex session/weekly allowance** (automatic — read from snapshots Codex
   already writes to its local logs).
+- 🔔 **Limit alerts** — a banner flags any usage window crossing a warning
+  threshold (Claude 5-hour/weekly/model-scoped meters *and* Codex rate limits),
+  most-urgent first, with provider label and reset time. Opt in to **desktop
+  notifications** with one click to get pinged when a new window crosses the
+  line. Thresholds default to 80% / 95% (`alertThresholds` to change,
+  `"alerts": false` to disable).
+- 🕒 **"When you work" heatmap** — a 7×24 day-by-hour grid shaded by spend, so
+  you can see at a glance when your usage actually happens; hover any cell for
+  its exact cost, tokens, and messages.
 - 🧠 **Reasoning-effort chips** — see which sessions ran at `low → max`, ultracode, or
   fast mode. Works **out of the box, retroactively**: Pulse reads your `/effort`
   commands straight from the session transcripts.

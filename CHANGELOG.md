@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.12.0
+
+- **Limit alerts:** Pulse now flags every usage window that crosses a warning
+  threshold — Claude account meters (5-hour, weekly, model-scoped weekly like
+  Opus/Fable) *and* Codex rate-limit snapshots — in an amber banner at the top
+  of the dashboard, most-urgent first, each labelled with its provider and reset
+  time. Because the Claude meters are account-wide, this covers all your
+  surfaces (Claude Code, claude.ai, Cowork, every device), not just this
+  machine. Optional **desktop notifications**: click *Enable desktop alerts*
+  once and Pulse fires a browser notification when a new window crosses a
+  threshold (de-duplicated per threshold+reset, so you're not re-pinged for the
+  same event). Thresholds default to 80% and 95% and are configurable via
+  `alertThresholds` in `~/.pulse/config.json`; set `"alerts": false` to turn the
+  whole feature off.
+- **"When you work" activity heatmap:** a 7×24 grid (day-of-week × hour, your
+  local time) shaded by spend, so you can see at a glance when your usage
+  actually happens. Hover any cell for its exact cost, tokens, and message
+  count. Live data only (the historical archive keeps no per-hour detail); the
+  panel hides itself until there's something to show.
+
 ## v1.11.2
 
 - **Meters stop background-polling the usage endpoint (fewer HTTP 429s):** the

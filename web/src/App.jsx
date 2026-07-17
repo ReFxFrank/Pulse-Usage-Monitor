@@ -3,10 +3,11 @@ import { motion, MotionConfig } from 'framer-motion';
 import {
   useSummary, makeColorMap, ACCENT, money2, tokens, num, clockTime, ago,
   perf, readGraphicsMode, effectiveLite, applyGraphicsMode,
+  fireAlertNotifications, requestAlertPermission, notifyPermission,
 } from './lib.js';
 import { SpendChart, Sparkline } from './charts.jsx';
 import {
-  Card, CurrentBlock, BurnRate, Rollup, BarList, EffortSpendBars, ProjectBars, SessionsTable, PeriodSelect, Legend, InfoTip,
+  Card, CurrentBlock, BurnRate, Rollup, BarList, EffortSpendBars, ProjectBars, SessionsTable, PeriodSelect, Legend, InfoTip, AlertsBar, Heatmap,
 } from './panels.jsx';
 import { ServerPanel, StopButton } from './server-panel.jsx';
 import { MetersCard } from './meters.jsx';
@@ -183,11 +184,20 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
         .map((s) => ({ name: s, ...period.bySource[s], color: colorMaps.src.get(s) }))
     : [];
 
+  // Limit alerts → desktop notifications (de-duplicated per reset cycle in lib).
+  const alerts = data.alerts || [];
+  const alertSig = alerts.map((a) => a.key + a.threshold + a.resetsAt).join(',');
+  const [notifyState, setNotifyState] = useState(() => notifyPermission());
+  useEffect(() => { fireAlertNotifications(alerts); }, [alertSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  const onEnableNotify = () => { requestAlertPermission(); setTimeout(() => setNotifyState(notifyPermission()), 400); };
+
   return (
     <>
       {data.selfCheck && !data.selfCheck.ok && (
         <div className="warnbar">⚠ internal self-check: {data.selfCheck.issues.join('; ')}</div>
       )}
+
+      <AlertsBar alerts={alerts} notifyState={notifyState} onEnableNotify={onEnableNotify} />
 
       <div className="grid stats">
         <CurrentBlock cb={data.currentBlock} delay={0} />
@@ -277,12 +287,24 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
         </>
       )}
 
-      <Card delay={0.32} hover={false}>
+      {data.heatmap && data.heatmap.maxCost > 0 && (
+        <Card delay={0.34} hover={false}>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            When you work
+            <InfoTip text="Spend by local day-of-week and hour, across all sessions in your logs. Darker = more spend in that hour. Hover a cell for the details.">
+              <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
+            </InfoTip>
+          </h2>
+          <Heatmap heatmap={data.heatmap} />
+        </Card>
+      )}
+
+      <Card delay={0.36} hover={false}>
         <h2>Recent sessions</h2>
         <SessionsTable sessions={data.recentSessions} />
       </Card>
 
-      <ServerPanel data={data} onStopped={onStopped} gfx={gfx} delay={0.36} />
+      <ServerPanel data={data} onStopped={onStopped} gfx={gfx} delay={0.4} />
     </>
   );
 }
