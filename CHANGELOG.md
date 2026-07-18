@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.13.1
+
+- **By-model bars are colored by provider now:** the bar fill for each model
+  uses its provider-family color (matching the logo on the row) — so every
+  Claude model shares one color, every OpenAI model another, and so on. Before,
+  bars used an arbitrary per-model palette, which put two different colors on
+  two Claude models and read as a random rainbow. Bar length still encodes
+  spend; by-source bars are unchanged (their colors match the source filter).
+
 ## v1.13.0
 
 - **Community reach on the dashboard:** a small header pill shows how far Pulse
