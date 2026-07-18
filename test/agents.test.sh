@@ -48,7 +48,14 @@ fs.writeFileSync(K+"/tasks/task-001/task_metadata.json", JSON.stringify({
   files_in_context: [],
   model_usage: [ { ts: now-8*60e3, model_id:"claude-opus-4-8", model_provider_id:"anthropic", mode:"act" } ],
 }));
-' "$GEM" "$CONT" "$CLINE"
+
+// A real Claude Code (cli) turn, recent so it opens the current 5h block:
+// claude-fable-5 ($10/$50), output 100k -> cost $5.00. The 5h block must count
+// ONLY this, never the agent sources above (they have their own limits).
+fs.writeFileSync(process.argv[4]+"/projects/demo/s.jsonl", JSON.stringify({
+  type:"assistant", timestamp: iso(3), sessionId:"cc1", requestId:"rr1", cwd:"/p",
+  message:{ id:"mm1", model:"claude-fable-5", usage:{ input_tokens:0, output_tokens:100000 } } })+"\n");
+' "$GEM" "$CONT" "$CLINE" "$CL"
 
 PORT=4893
 PULSE_HOME=$PH CLAUDE_DIR=$CL CODEX_DIR=$TMP/no-codex \
@@ -82,6 +89,11 @@ ok(bm["claude-opus-4-8"]&&near(bm["claude-opus-4-8"].cost,2.34), "by-model opus 
 // no unknown-model pricing warnings for the agent models
 const log=require("fs").readFileSync(process.argv[1]+"/srv.log","utf8");
 ok(!/unknown model.*gemini-3-pro/i.test(log), "no unknown-model warning for gemini-3-pro");
+// Claude 5h block counts ONLY Claude Code usage (the $5 cli turn), NOT the
+// agent sources (gemini 8.84 / continue 4 / cline 2.34 on a Claude model).
+const cb=s.currentBlock;
+ok(cb && near(cb.cost,5.00), "5h block = Claude Code only ($5.00), agents excluded (got "+(cb&&cb.cost)+")");
+ok(!s.selfCheck || !(s.selfCheck.issues||[]).some(x=>/block entries/.test(x)), "selfCheck: block-entry count matches (no agent leak)");
 process.exit(fail);
 ' "$TMP"
 RES=$?

@@ -20,6 +20,11 @@
     `CONTINUE_DIR`/`CONTINUE_GLOBAL_DIR`, `CLINE_DIR`.
 - Everything stays local and read-only — these logs are only ever read, never
   written.
+- The **Claude 5-hour block** counts only Claude Code usage — the newly-ingested
+  agents (and a Cline/Continue turn that happens to run a Claude model) don't
+  touch that subscription window, so they're excluded from the block and its
+  "vs heaviest block" comparison. The `est` badge on estimated sources also
+  survives log pruning (it persists once the source is only in the archive).
 
 ## v1.13.3
 

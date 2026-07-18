@@ -29,6 +29,15 @@ const PULSE_VERSION = '1.14.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
+// Sources that are NOT the Claude Code subscription (each has its own limits /
+// billing). Used to keep the Claude 5-hour block honest — it must count ONLY
+// Claude Code usage, never Codex or the other ingested agents. GLM stays in
+// (it flows through Claude Code itself).
+const AGENT_SOURCES = new Set(['codex', 'gemini', 'cline', 'continue']);
+// Sources whose numbers are self-reported estimates (Continue computes token
+// counts locally rather than reading provider billing). Constant so the "est"
+// badge survives after the live logs are pruned and only the archive remains.
+const KNOWN_ESTIMATE_SOURCES = new Set(['continue']);
 
 // ---------------------------------------------------------------------------
 // LOGGING
@@ -1406,9 +1415,12 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   const liveDays = new Set(asc.map((e) => localDateStr(e.ts)));
 
   // ---- 5-hour blocks + active block ----
-  // Claude entries only: the 5h window is CLAUDE's rate-limit concept; Codex
-  // has its own separate limits and must not distort the reset countdown.
-  const claudeAsc = asc.filter((e) => e.provider !== 'openai');
+  // Claude Code entries only: the 5h window is the Claude Code subscription's
+  // rate-limit concept. Every other ingested agent (Codex, Gemini, Cline,
+  // Continue) has its own separate limits/billing and must not distort the
+  // reset countdown — gate by SOURCE, not provider (a Cline turn on a Claude
+  // model is still not Claude Code usage).
+  const claudeAsc = asc.filter((e) => !AGENT_SOURCES.has(e.source));
   const rawBlocks = computeBlocks(claudeAsc);
   const blocks = rawBlocks.map(summarizeBlock);
   let activeBlock = null;
@@ -1626,7 +1638,10 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   const ACTIVE_MS = 15 * 60 * 1000;
   let activeProvider = null;
   if (asc.length && now - asc[asc.length - 1].ts <= ACTIVE_MS) {
-    activeProvider = asc[asc.length - 1].source === 'codex' ? 'codex' : 'claude';
+    // Only Claude Code / Codex have dedicated Discord art. The other agents map
+    // to null (Pulse art) rather than falsely claiming "Using Claude Code".
+    const lastSrc = asc[asc.length - 1].source;
+    activeProvider = lastSrc === 'codex' ? 'codex' : AGENT_SOURCES.has(lastSrc) ? null : 'claude';
   }
 
   // Activity heatmap — cost/tokens/messages by local weekday (0=Sun … 6=Sat) ×
@@ -1655,7 +1670,10 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     periods,
     allSources,
     allModels,
-    estimatedSources: Array.from(estimatedSourcesSet).sort(),
+    // Union live-flagged estimate sources with the known set, over allSources —
+    // so a source like Continue stays badged "est" even after its live logs are
+    // pruned and only the (flag-less) archive remains.
+    estimatedSources: allSources.filter((s) => estimatedSourcesSet.has(s) || KNOWN_ESTIMATE_SOURCES.has(s)),
     recentSessions,
     heatmap,
     pricing: buildPricingView(now),
@@ -2007,7 +2025,7 @@ function selfCheck(payload, asc, rawBlocks) {
   // every block's entries ⊆ Claude entries (blocks are Claude-only; Codex has
   // its own limit windows and is excluded from block reconstruction)
   const blockEntryCount = rawBlocks.reduce((a, b) => a + b.entries.length, 0);
-  const claudeCount = asc.reduce((a, e) => a + (e.provider !== 'openai' ? 1 : 0), 0);
+  const claudeCount = asc.reduce((a, e) => a + (AGENT_SOURCES.has(e.source) ? 0 : 1), 0);
   if (blockEntryCount !== claudeCount) {
     issues.push(`block entries (${blockEntryCount}) != claude entries (${claudeCount})`);
   }
