@@ -7,7 +7,7 @@ import {
 } from './lib.js';
 import { SpendChart, Sparkline } from './charts.jsx';
 import {
-  Card, CurrentBlock, BurnRate, Rollup, BarList, EffortSpendBars, ProjectBars, SessionsTable, PeriodSelect, Legend, InfoTip, AlertsBar, Heatmap,
+  Card, CurrentBlock, BurnRate, Rollup, BarList, EffortSpendBars, ProjectBars, SessionsTable, PeriodSelect, Legend, InfoTip, AlertsBar, Heatmap, BudgetCard,
 } from './panels.jsx';
 import { ServerPanel, StopButton } from './server-panel.jsx';
 import { MetersCard } from './meters.jsx';
@@ -185,6 +185,23 @@ function SourceFilter({ allSources, active, colorMap, onChange, estimated = [] }
   );
 }
 
+// Delta chip: this period's spend vs the previous equal-length window.
+// Hidden when there's no prior data to compare against (avoids a meaningless
+// "+100%" on your first period).
+function PeriodDelta({ cost, prev, label }) {
+  if (!prev || prev.cost <= 0) return null;
+  const d = ((cost - prev.cost) / prev.cost) * 100;
+  const up = d >= 0;
+  const cls = Math.abs(d) < 0.5 ? 'flat' : up ? 'up' : 'down';
+  const arrow = cls === 'flat' ? '±' : up ? '▲' : '▼';
+  return (
+    <span className={'perioddelta ' + cls} title={`vs ${label}: ${money2(prev.cost)}`}>
+      {' '}{arrow} {Math.abs(d) < 0.5 ? '0' : Math.abs(Math.round(d))}%
+      <span className="pdlabel"> vs {label}</span>
+    </span>
+  );
+}
+
 function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx }) {
   const periods = data.periods || [];
   let period = periods.find((p) => p.key === periodKey);
@@ -214,6 +231,8 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
 
       <AlertsBar alerts={alerts} notifyState={notifyState} onEnableNotify={onEnableNotify} />
 
+      <BudgetCard budget={data.budget} />
+
       <div className="grid stats">
         <CurrentBlock cb={data.currentBlock} delay={0} />
         <BurnRate burn={data.burnRate} delay={0.05} />
@@ -240,6 +259,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
             </div>
             <div className="sub" style={{ margin: '2px 0 14px' }}>
               <span className="mono" style={{ color: 'var(--text)', fontSize: 17 }}>{money2(period.cost)}</span>
+              <PeriodDelta cost={period.cost} prev={period.prev} label={period.key.startsWith('last') ? 'prev ' + period.label.replace('Last ', '').toLowerCase() : 'prev month'} />
               {' · '}<span className="mono">{tokens(period.tokens)}</span> tokens
               {' · '}<span className="mono">{num(period.messages)}</span> msgs
               {' · '}<span className="mono">{num(period.sessions)}</span> sessions

@@ -52,6 +52,8 @@ the old name; git remotes redirect).
 | Pricing | `PRICING` (Anthropic + Zhipu/Z.ai `glm-*`, which arrive via Claude Code's Z.ai Anthropic-compatible proxy and price through the Claude path w/ longest-prefix match), `PRICING_OPENAI` (exact rows; prefix fallback ONLY for date suffixes — OpenAI `-mini`/`-pro` are different models), `PRICING_GOOGLE` (`priceForGoogle`, longest-prefix so `-flash-lite` beats `-flash` and dated/-preview fall back; cached=10% of input; July 2026 Gemini rates); `costForEntry` dispatches `openai`→OpenAI, `google`→Google, else Claude path; unknown models log once + `__default__` |
 | Effort chips | `parseLocalCommand`, `parseEffortStdout` (interactive-picker confirmation echoes), `mergeModes`, `annotateModes` (state-snapshot join: latest event ≤ entry.ts; `parseEffort` is the immutable Codex-side input) |
 | Analytics breakdowns | `buildPeriod` also emits per-period `effortSpend` (bucket = ultracode\|level\|default), `byProject` (top 30 by cost + `(other)`), `liveCost` — all LIVE-only (archive keeps no per-entry effort/project); UI: `EffortSpendBars`/`ProjectBars` (panels.jsx) |
+| Period comparison | each period carries `prev` = `{cost,tokens,messages}` for the immediately-preceding equal-length window (rolling: the N days before; month: prior calendar month), via the `sumWindow` closure in `aggregate` (live+archive merge, same as buildPeriod); UI: `PeriodDelta` chip on the Spend header (App.jsx), hidden when `prev.cost<=0` |
+| Budget goal | `computeBudget(periods, week, now)` → `payload.budget` = `{target,period,label,spent,pct,remaining,resetsAt,state}` (state ok\|warn≥80\|over≥100); month = current calendar-month period cost (resets 1st), week = trailing-7d `week.cost` (rolling); config `budget`+`budgetPeriod`, set via POST `/api/budget/set?amount&period` (allowMutation; amount≤0 clears); UI: `BudgetCard` (panels.jsx, settable inline) |
 | 5h block | `aggregate` — official window from meters `five_hour.resets_at` when available (`official: true`), else log reconstruction |
 | Historical retention | `sealHistory` (writes sealed past days → `~/.pulse/history/YYYY-MM.json`, gated 5 min, re-seals until pruned), `readHistory` (mtime-cached), `filterHistory`; merged in `aggregate`/`buildPeriod` — live day wins, archive fills gaps (never double-counts); augments `totals`; on by default (`{"history": false}` off) |
 | Claude account meters (opt-in) | `refreshAccountMeters`, `parseMeterBucket`, `METER_LABELS` (provider-prefixed), `limits[]` array → model-scoped weekly rows (`kind === 'weekly_scoped'`, `scope.model.display_name`, e.g. Fable), 429 backoff + last-good retention, macOS Keychain via `readOauthTokenAsync`; refresh is DASHBOARD-driven — `metersForPayload(background)`/`buildSummary(_, {background})` make the status line & Discord only trickle it (`BACKGROUND_METERS_MS` 15m) so Pulse doesn't 24/7-poll the shared endpoint |
@@ -72,7 +74,9 @@ dashboard toggle sets both, a pre-1.6.0 `accountMeters` alone must NOT enable
 the chatgpt.com call), `discordPresence`, `discordClientId`,
 `discordRotateSecs` (15–300), `discordLargeImage`, `history` (retention; on
 unless `false`), `alerts` (limit alerts; on unless `false`), `alertThresholds`
-(array of pct 1–100; default `[80,95]`), `updateCheck`.
+(array of pct 1–100; default `[80,95]`), `budget` (USD spend target; unset =
+off) + `budgetPeriod` (`month`|`week`, default month; set via `/api/budget/set`),
+`updateCheck`.
 
 Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `CODEX_DIR`/`CODEX_HOME`, `GEMINI_DIR`/`GEMINI_CLI_HOME`,

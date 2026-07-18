@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.15.0
+
+- **Budget goals:** set a monthly or weekly spend target and watch a progress
+  bar fill toward it, right at the top of the dashboard. It colours ok → amber
+  (≥80%) → red (over), shows what's left (or how far over) and when it resets,
+  and you set/change/clear it inline — no config file editing. Stored as
+  `budget` + `budgetPeriod` in `~/.pulse/config.json`; month = calendar month
+  (resets on the 1st), week = trailing 7 days.
+- **Period-over-period comparison:** the spend header now shows how the selected
+  window compares to the one before it — e.g. **▲ 211% vs prev 30 days** (or vs
+  the previous calendar month). Hidden when there's no prior data to compare
+  against, so your first period doesn't show a meaningless jump.
+- **Cleaner bars:** the by-model / by-source bar tracks are now fully
+  transparent — a shorter (lower-spend) bar simply looks shorter, with no faint
+  trailing trough.
+
 ## v1.14.0
 
 - **More agents, no setup:** Pulse now ingests three more coding agents straight

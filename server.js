@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.14.0';
+const PULSE_VERSION = '1.15.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -1549,6 +1549,21 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   // default), so long windows only show what is still on disk — documented.
   const periods = [];
 
+  // Totals for an arbitrary day-list, merging live entries with the archive the
+  // same way buildPeriod does (live day wins, archive fills the gaps). Used to
+  // compute each period's PREVIOUS equal-length window for the delta chip.
+  const sumWindow = (dayList) => {
+    const daySet = new Set(dayList);
+    let cost = 0, tokens = 0, messages = 0;
+    for (const e of asc) if (daySet.has(localDateStr(e.ts))) { cost += e.cost; tokens += tokensOf(e); messages++; }
+    for (const ds of dayList) {
+      if (liveDays.has(ds)) continue; // live already counted this day
+      const rec = hist.byDay[ds];
+      if (rec && Array.isArray(rec.rows)) for (const r of rec.rows) { cost += +r.cost || 0; tokens += +r.tokens || 0; messages += +r.messages || 0; }
+    }
+    return { cost, tokens, messages };
+  };
+
   // Rolling windows (newest first in the dropdown).
   for (const [key, label, nDays] of [
     ['last30', 'Last 30 days', 30],
@@ -1558,7 +1573,11 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     const days = localDayStartsBack(now, nDays);
     const daySet = new Set(days);
     const inWin = asc.filter((e) => daySet.has(localDateStr(e.ts)));
-    periods.push(buildPeriod(key, label, inWin, days, allSources, hist, liveDays));
+    const p = buildPeriod(key, label, inWin, days, allSources, hist, liveDays);
+    // Previous equal-length window: the nDays immediately before this one.
+    const prevAnchor = new Date(now); prevAnchor.setDate(prevAnchor.getDate() - nDays);
+    p.prev = sumWindow(localDayStartsBack(prevAnchor.getTime(), nDays));
+    periods.push(p);
   }
   // One period per calendar month present in the data (newest first, capped).
   const months = Array.from(monthKeySet).sort().reverse().slice(0, 24);
@@ -1566,7 +1585,11 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     const [y, m] = mk.split('-').map(Number);
     const days = monthDayList(y, m - 1);
     const inMonth = asc.filter((e) => localDateStr(e.ts).slice(0, 7) === mk);
-    periods.push(buildPeriod(mk, monthLabel(y, m), inMonth, days, allSources, hist, liveDays));
+    const p = buildPeriod(mk, monthLabel(y, m), inMonth, days, allSources, hist, liveDays);
+    // Previous calendar month.
+    const prevM = new Date(y, m - 2, 1);
+    p.prev = sumWindow(monthDayList(prevM.getFullYear(), prevM.getMonth()));
+    periods.push(p);
   }
 
   // ---- recent sessions (newest first) ----
@@ -1668,6 +1691,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     today,
     week,
     periods,
+    budget: computeBudget(periods, week, now),
     allSources,
     allModels,
     // Union live-flagged estimate sources with the known set, over allSources —
@@ -2247,6 +2271,39 @@ function computeAlerts(meters, codexMeters) {
   // Most urgent first.
   out.sort((a, b) => b.pct - a.pct);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// BUDGET GOAL — an optional self-set spend target (`budget` USD +
+// `budgetPeriod` month|week in ~/.pulse/config.json, set via the dashboard).
+// Reports progress against the CURRENT period's spend across all sources.
+// month = current calendar month (resets on the 1st); week = trailing 7 days
+// (payload.week, rolling — no hard reset). Returns null when unset.
+// ---------------------------------------------------------------------------
+function budgetConfig() {
+  const c = readConfig();
+  const target = typeof c.budget === 'number' && isFinite(c.budget) && c.budget > 0 ? c.budget : null;
+  const period = c.budgetPeriod === 'week' ? 'week' : 'month';
+  return { target, period };
+}
+function computeBudget(periods, week, now) {
+  const { target, period } = budgetConfig();
+  if (!target) return null;
+  let spent = 0, resetsAt = null, label;
+  if (period === 'week') {
+    spent = (week && week.cost) || 0; // trailing 7 days
+    label = 'last 7 days';
+  } else {
+    const mk = localDateStr(now).slice(0, 7);
+    const p = (periods || []).find((x) => x.key === mk);
+    spent = p ? p.cost : 0;
+    const d = new Date(now);
+    resetsAt = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(); // start of next month
+    label = 'this month';
+  }
+  const pct = (spent / target) * 100;
+  const state = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : 'ok';
+  return { target, period, label, spent, pct, remaining: Math.max(0, target - spent), resetsAt, state };
 }
 
 // ---------------------------------------------------------------------------
@@ -3679,6 +3736,19 @@ function startServer(port, host, opts) {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, discord: discordForPayload() }));
+        return;
+      }
+      if (route === '/api/budget/set') {
+        if (!allowMutation(req, res)) return;
+        const q = url.parse(req.url, true).query || {};
+        const amount = parseFloat(q.amount);
+        const period = q.period === 'week' ? 'week' : 'month';
+        // amount <= 0 / blank / NaN clears the budget.
+        const target = isFinite(amount) && amount > 0 ? amount : null;
+        writeConfig({ budget: target, budgetPeriod: period });
+        console.log('[pulse] budget ' + (target ? '$' + target + '/' + period : 'cleared') + ' from the dashboard');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, budget: target ? { target, period } : null }));
         return;
       }
       if (route === '/api/update/check') {

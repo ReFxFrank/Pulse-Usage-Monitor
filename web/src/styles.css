@@ -171,10 +171,9 @@ svg { display: block; }
 }
 .hbar .nm { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
 .hbar .nm i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
-/* very faint trough so a shorter bar reads as a shorter bar, not a colored bar
-   followed by a prominent empty rectangle (the "extra space" after low-spend
-   rows). Kept just visible enough to anchor tiny bars. */
-.hbar .track { background: rgba(255, 255, 255, 0.028); border-radius: 6px; height: 18px; overflow: hidden; }
+/* No trough: a shorter bar is just a shorter bar, with nothing trailing it.
+   (min-width on the fill keeps a near-zero bar from vanishing entirely.) */
+.hbar .track { background: transparent; border-radius: 6px; height: 18px; overflow: hidden; }
 .hbar .track > i { display: block; height: 100%; border-radius: 6px; }
 .hbar .v { font-family: var(--mono); font-size: 12.5px; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .hbar .v small { color: var(--text-3); }
@@ -283,6 +282,49 @@ footer .reading { margin-top: 12px; font-family: var(--mono); font-size: 11.5px;
   font-size: 8.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
   color: var(--accent-3); margin-left: 3px; vertical-align: super; cursor: help;
 }
+
+/* ---- budget goal card ---- */
+.budgetcard {
+  border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.02);
+  border-radius: 14px; padding: 13px 16px; margin-bottom: 16px;
+}
+.budgetcard .bhead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.budgetcard .blabel { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
+.budgetcard .bfig { color: var(--text-3); font-size: 13px; }
+.budgetcard .bfig b { font-family: var(--mono); color: var(--text); font-size: 15px; }
+.budgetcard .bof { margin-left: 2px; }
+.budgetcard .bpct { font-family: var(--mono); margin-left: 8px; color: var(--text-2); }
+.budgetcard .bedit {
+  appearance: none; margin-left: auto; border: 1px solid var(--stroke); background: transparent;
+  color: var(--text-3); font: inherit; font-size: 11px; padding: 2px 9px; border-radius: 999px; cursor: pointer;
+}
+.budgetcard .bedit:hover { border-color: rgba(155, 140, 255, 0.5); color: var(--text-2); }
+.budgetcard .btrack { height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); overflow: hidden; margin: 10px 0 8px; }
+.budgetcard .bfill { height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.2,.7,.2,1); background: var(--accent-grad); }
+.budgetcard.state-warn .bfill { background: linear-gradient(90deg, #e0a132, #f0b84a); }
+.budgetcard.state-over .bfill { background: linear-gradient(90deg, #f27878, #ff9a9a); }
+.budgetcard .bsub { font-size: 12px; color: var(--text-3); }
+.budgetcard.state-over .bover { color: #f27878; font-weight: 600; }
+.budgetcard .bsep { margin: 0 7px; opacity: 0.5; }
+.budgetcard .bform { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.budgetcard .bcur { color: var(--text-3); font-family: var(--mono); }
+.budgetcard .binput {
+  width: 100px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--stroke);
+  color: var(--text); border-radius: 8px; padding: 6px 10px; font: inherit; font-family: var(--mono);
+}
+.budgetcard .bperiod { display: flex; gap: 4px; }
+.budgetcard .bpchip {
+  appearance: none; border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.03);
+  color: var(--text-3); font: inherit; font-size: 11.5px; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+}
+.budgetcard .bpchip.on { border-color: rgba(155, 140, 255, 0.6); color: var(--text); background: rgba(155, 140, 255, 0.12); }
+
+/* ---- period-over-period delta chip ---- */
+.perioddelta { font-family: var(--mono); font-size: 12px; margin-left: 8px; white-space: nowrap; }
+.perioddelta.up { color: #e0a132; }
+.perioddelta.down { color: #22b892; }
+.perioddelta.flat { color: var(--text-3); }
+.perioddelta .pdlabel { color: var(--text-3); font-family: var(--sans, inherit); }
 .srvfacts { margin-top: 2px; margin-bottom: 14px; flex-wrap: wrap; row-gap: 10px; }
 .srvfacts .updavail { color: var(--accent-3); }
 .btnrow { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; }

@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, animate } from 'framer-motion';
 import * as Select from '@radix-ui/react-select';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { ProgressRing } from './charts.jsx';
-import { money2, tokens, num, pct, durClock, hm, ago, ACCENT, perf } from './lib.js';
+import { money, money2, tokens, num, pct, dur, durClock, hm, ago, ACCENT, perf, postJson } from './lib.js';
 import { ModelLogo, modelFamily, FAMILY_META } from './logos.jsx';
 
 const EASE = [0.2, 0.7, 0.2, 1];
@@ -224,6 +224,82 @@ export function AlertsBar({ alerts, notifyState, onEnableNotify }) {
   );
 }
 
+// Budget goal: progress toward a self-set monthly/weekly spend target, with an
+// inline control to set/change/clear it. Colours shift ok → warn (≥80%) → over
+// (≥100%). Renders a slim "set a budget" prompt when none is configured.
+export function BudgetCard({ budget }) {
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState(budget ? String(budget.target) : '');
+  const [period, setPeriod] = useState(budget ? budget.period : 'month');
+  const [busy, setBusy] = useState(false);
+
+  async function save(clear) {
+    setBusy(true);
+    try {
+      const amt = clear ? 0 : parseFloat(amount);
+      await postJson('/api/budget/set?amount=' + (isFinite(amt) ? amt : 0) + '&period=' + period);
+      setEditing(false); // the 10s poll refreshes data.budget with the new spend
+      if (clear) setAmount('');
+    } catch (_) { /* leave the form open on failure */ }
+    setBusy(false);
+  }
+
+  if (editing || !budget) {
+    return (
+      <div className="budgetcard set">
+        <div className="bhead"><span className="blabel">Spend budget</span></div>
+        {editing || !budget ? (
+          <div className="bform">
+            <span className="bcur">$</span>
+            <input
+              className="binput" type="number" min="0" step="1" inputMode="decimal"
+              placeholder="e.g. 200" value={amount} autoFocus={editing}
+              onChange={(e) => setAmount(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') save(false); }}
+            />
+            <div className="bperiod">
+              {['month', 'week'].map((p) => (
+                <button key={p} className={'bpchip' + (period === p ? ' on' : '')} onClick={() => setPeriod(p)}>/{p === 'month' ? 'mo' : 'wk'}</button>
+              ))}
+            </div>
+            <button className="btn albtn" disabled={busy || !(parseFloat(amount) > 0)} onClick={() => save(false)}>Save</button>
+            {budget && <button className="btn ghost albtn" disabled={busy} onClick={() => save(true)}>Clear</button>}
+            {budget && <button className="btn ghost albtn" disabled={busy} onClick={() => { setEditing(false); setAmount(String(budget.target)); }}>Cancel</button>}
+          </div>
+        ) : (
+          <button className="btn albtn" onClick={() => setEditing(true)}>Set a spend budget</button>
+        )}
+      </div>
+    );
+  }
+
+  const p = Math.min(100, budget.pct);
+  const msLeft = budget.resetsAt ? budget.resetsAt - Date.now() : null;
+  // Monthly resets are days out — show "Nd" rather than hundreds of hours.
+  const resetTxt = msLeft != null
+    ? 'resets in ' + (msLeft >= 48 * 3600e3 ? Math.round(msLeft / 86400e3) + 'd' : dur(msLeft))
+    : 'rolling 7 days';
+  return (
+    <div className={'budgetcard state-' + budget.state}>
+      <div className="bhead">
+        <span className="blabel">Budget · {budget.label}</span>
+        <span className="bfig">
+          <b>{money2(budget.spent)}</b> <span className="bof">of {money(budget.target)}</span>
+          <span className="bpct">{Math.round(budget.pct)}%</span>
+        </span>
+        <button className="bedit" title="Change budget" onClick={() => { setEditing(true); setAmount(String(budget.target)); setPeriod(budget.period); }}>edit</button>
+      </div>
+      <div className="btrack"><div className="bfill" style={{ width: p + '%' }} /></div>
+      <div className="bsub">
+        {budget.state === 'over'
+          ? <span className="bover">over by {money2(budget.spent - budget.target)}</span>
+          : <span>{money2(budget.remaining)} left</span>}
+        <span className="bsep">·</span>{resetTxt}
+      </div>
+    </div>
+  );
+}
+
 // Activity heatmap: weekday × hour, shaded by cost (messages on hover). A model
 // only appears if it's in the logs, so the grid reflects real working hours.
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -440,8 +516,7 @@ export function PeriodSelect({ periods, value, onChange }) {
   );
 }
 
-// local 1s ticker (kept here to avoid importing the hook shape twice)
-import { useState } from 'react';
+// local 1s ticker (useState/useEffect imported at the top of the file)
 function useTickLocal() {
   const [, set] = useState(0);
   useEffect(() => {

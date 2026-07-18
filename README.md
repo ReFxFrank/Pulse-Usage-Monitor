@@ -48,6 +48,11 @@ logs already on your machine.
   notifications** with one click to get pinged when a new window crosses the
   line. Thresholds default to 80% / 95% (`alertThresholds` to change,
   `"alerts": false` to disable).
+- 🎯 **Budget goals** — set a monthly or weekly spend target and track progress
+  toward it with a bar that goes amber at 80% and red when you're over. Set it
+  inline (no config editing); shows what's left and when it resets.
+- 📈 **Period-over-period comparison** — the spend header shows the delta vs the
+  previous equal window (e.g. *▲ 18% vs prev 30 days*), so trends are obvious.
 - 🕒 **"When you work" heatmap** — a 7×24 day-by-hour grid shaded by spend, so
   you can see at a glance when your usage actually happens; hover any cell for
   its exact cost, tokens, and messages.
@@ -396,6 +401,7 @@ amount you'll be charged. Verify current list prices at
 | `/api/logs` | GET | Recent server log lines (the Server panel's log view). |
 | `/api/shutdown` | POST | Stop the server. Requires `X-Pulse: 1`, loopback only. |
 | `/api/update/check` · `/api/update/install` | POST | Update flow. Same guards. |
+| `/api/budget/set?amount&period` | POST | Set/clear the spend budget (`amount<=0` clears). Same guards. |
 
 ## 📁 Repository layout
 
