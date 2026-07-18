@@ -16,6 +16,7 @@ bash test/discord.test.sh     # one suite
 | `pricing.test.sh` | Exact OpenAI list-price rows for the current Codex lineup; no unknown-model warnings |
 | `codex-usage.test.sh` | ChatGPT account token usage: happy path, 401→expired, no-login, zero-usage=ok, corrupt auth.json (no 500, no wedge), legacy-consent gate, no token leakage into logs |
 | `discord.test.sh` | Rich Presence: handshake, rotating pages, single-line activity, clear-on-disable, shipped default app ID, Discord-not-running degradation |
+| `discord-presence.test.sh` | Elapsed-timer anchor persists across restarts: recent heartbeat / `--after-update` reuse the saved anchor (no reset on self-update), long gap resets to a fresh one |
 | `effort-echo.test.sh` | Effort chips from picker confirmation echoes; anti-forgery (quoted words in prompts) |
 | `history.test.sh` | Retention: sealing past days (never today), non-shrinking re-seal, per-cell recovery of a pruned cell, dedup (no double count), window scoping, `history:false` disable |
 | `statusline.test.sh` | `--statusline`: server-fed enrichment (today/5h/meter %), server-down fail-open, `NO_COLOR`, single line, always exit 0 |

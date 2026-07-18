@@ -25,9 +25,10 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.13.2';
+const PULSE_VERSION = '1.13.3';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
+let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
 
 // ---------------------------------------------------------------------------
 // LOGGING
@@ -2914,6 +2915,39 @@ function discordRotateMs() {
   return DISCORD_ROTATE_MS_DEFAULT;
 }
 
+// Discord's elapsed-time counter is anchored to `timestamps.start`. Anchoring
+// it to SERVER_START would reset the timer to 0 on every process restart —
+// including the relaunch a self-update performs — which is jarring (your
+// "Pulse for 3h" jumps back to 0s just because it updated). So we PERSIST the
+// anchor to ~/.pulse and reuse it when Pulse was only briefly down: definitely
+// on a post-update relaunch (IS_AFTER_UPDATE), and on a quick manual restart
+// (last heartbeat within the grace window). A cold start after a long gap
+// resets, so the counter never shows a misleading multi-day age.
+const DISCORD_START_GRACE_MS = 10 * 60 * 1000;
+function discordStartFilePath() { return path.join(pulseHome(), 'discord-presence.json'); }
+let discordStart = null;         // resolved presence anchor (ms epoch)
+let discordStartLastSaved = 0;   // last heartbeat write (throttle)
+function persistDiscordStart(now) {
+  if (discordStart == null) return;
+  try {
+    fs.mkdirSync(pulseHome(), { recursive: true });
+    fs.writeFileSync(discordStartFilePath(), JSON.stringify({ start: discordStart, savedAt: now }));
+    discordStartLastSaved = now;
+  } catch (_) { /* ~/.pulse unwritable → timer just resets next relaunch */ }
+}
+function discordPresenceStart() {
+  if (discordStart != null) return discordStart;
+  let prev = null;
+  try { prev = JSON.parse(fs.readFileSync(discordStartFilePath(), 'utf8')); } catch (_) {}
+  const validPrev = prev && typeof prev.start === 'number' && isFinite(prev.start) && prev.start <= SERVER_START;
+  const recent = validPrev && typeof prev.savedAt === 'number' && (SERVER_START - prev.savedAt) < DISCORD_START_GRACE_MS;
+  // Reuse the old anchor across an update relaunch or a brief restart; else
+  // begin a fresh session at this process's start.
+  discordStart = (validPrev && (IS_AFTER_UPDATE || recent)) ? prev.start : SERVER_START;
+  persistDiscordStart(SERVER_START);
+  return discordStart;
+}
+
 function buildDiscordActivity() {
   let s = null;
   try { s = buildSummary(null, { background: true }); } catch (_) { return null; }
@@ -2942,7 +2976,7 @@ function buildDiscordActivity() {
     : 'Pulse — idle';
   return {
     details: details.slice(0, 128),
-    timestamps: { start: SERVER_START }, // elapsed stays continuous across pages
+    timestamps: { start: discordPresenceStart() }, // persisted → survives update relaunches
     assets: {
       large_image: asset,
       large_text: assetText,
@@ -2971,6 +3005,10 @@ function discordTick() {
   }
   const act = buildDiscordActivity();
   if (!act) return;
+  // Heartbeat the persisted anchor (throttled) so a brief manual restart also
+  // continues the timer, not just post-update relaunches.
+  const nowTs = Date.now();
+  if (nowTs - discordStartLastSaved >= 60000) persistDiscordStart(nowTs);
   const key = JSON.stringify(act);
   if (key === discordLastActivity) return; // only send real changes
   discordLastActivity = key;
@@ -4012,6 +4050,7 @@ function main() {
   const host = resolveHost(args);
   if (args.stop) { stopRunning(port); return; }
   if (args.daemonChild) IS_DAEMON_CHILD = true;
+  if (args.afterUpdate) IS_AFTER_UPDATE = true;
   // Detached processes (hidden daemon, post-update relaunch on any platform)
   // have no console — their output must land in ~/.pulse/pulse.log.
   if (args.daemonChild || args.afterUpdate) openLogFile();

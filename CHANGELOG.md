@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.13.3
+
+- **Discord presence timer no longer resets on update:** the elapsed-time
+  counter on your Discord activity ("Pulse — for 3h") was anchored to the
+  process start, so every self-update relaunch reset it to 0s. The anchor is now
+  persisted to `~/.pulse` and reused across the relaunch, so the timer keeps
+  counting through an update. It also survives a quick manual restart (within a
+  10-minute grace window); a cold start after a long gap still begins fresh, so
+  the counter never shows a misleading multi-day age.
+
 ## v1.13.2
 
 - **Reverted to per-model bar colors** — the by-model bars are distinctly
