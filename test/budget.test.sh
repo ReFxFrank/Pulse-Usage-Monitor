@@ -45,11 +45,29 @@ const okc=B("ok.json");
 ok(okc && near(okc.spent,30) && okc.target===100, "spent $30 of $100 target (got "+(okc&&okc.spent)+")");
 ok(okc && near(okc.pct,30) && okc.state==="ok" && near(okc.remaining,70), "30% -> state ok, $70 left");
 ok(okc && okc.period==="month" && okc.resetsAt>Date.now(), "month period resets in the future");
+// Month-end projection: spent / fraction-of-month-elapsed, computed with the
+// same clock. Skipped in the first ~half day of a month (server returns null).
+const now=Date.now(), d=new Date(now);
+const ms=new Date(d.getFullYear(),d.getMonth(),1).getTime(), me=new Date(d.getFullYear(),d.getMonth()+1,1).getTime();
+const elapsed=(now-ms)/(me-ms);
+// The server suppresses at elapsed <= 0.017; assert only CLEARLY on either
+// side of that line (the test computes elapsed seconds after the server did,
+// so right at the boundary the two can legitimately disagree).
+if (elapsed > 0.021) {
+  ok(okc && okc.projected!=null && okc.projected>=okc.spent-0.01 &&
+     Math.abs(okc.projected-okc.spent/elapsed)/okc.projected < 0.01,
+     "month projection = spent/elapsed ("+(okc&&okc.projected&&okc.projected.toFixed(2))+" vs "+(okc&&(okc.spent/elapsed).toFixed(2))+")");
+} else if (elapsed < 0.013) {
+  ok(okc && okc.projected==null, "first half-day of month -> projection suppressed");
+} else {
+  ok(true, "inside the suppression boundary band -> projection assertion skipped");
+}
 ok(B("warn.json").state==="warn", "spend 30/35 = 85.7% -> warn ("+B("warn.json").pct.toFixed(1)+"%)");
 const over=B("over.json");
 ok(over.state==="over" && near(over.remaining,0), "spend 30/25 = 120% -> over, remaining clamped to 0");
 const wk=B("week.json");
 ok(wk && near(wk.spent,30) && wk.period==="week" && wk.resetsAt===null, "week period uses trailing-7d spend, no hard reset");
+ok(wk && wk.projected==null, "rolling week has no projection (no fixed end to project to)");
 ok(B("none.json")===null || B("none.json")===undefined, "no budget configured -> payload.budget null");
 
 const sr=require(T+"/setresp.json");

@@ -50,7 +50,14 @@ logs already on your machine.
   `"alerts": false` to disable).
 - 🎯 **Budget goals** — set a monthly or weekly spend target and track progress
   toward it with a bar that goes amber at 80% and red when you're over. Set it
-  inline (no config editing); shows what's left and when it resets.
+  inline (no config editing); shows what's left, when it resets, and — for
+  month budgets — a **month-end projection** (*on pace for ~$47*) that warns
+  weeks before you'd blow through the target.
+- 📤 **CSV / JSON export** — download the selected window from the **⇩ export**
+  menu: daily spend (per-source columns), by model / source / project, or the
+  recent-sessions table as Excel-friendly CSV, or the full payload as JSON.
+  Respects the active source filter and period; served by your own loopback
+  server, so nothing leaves the machine.
 - 📈 **Period-over-period comparison** — the spend header shows the delta vs the
   previous equal window (e.g. *▲ 18% vs prev 30 days*), so trends are obvious.
 - 🕒 **"When you work" heatmap** — a 7×24 day-by-hour grid shaded by spend, so
@@ -401,6 +408,7 @@ amount you'll be charged. Verify current list prices at
 | `/api/health` | GET | `{ ok, version, pid }` |
 | `/api/logs` | GET | Recent server log lines (the Server panel's log view). |
 | `/api/statusline` | GET | Slim, memoized feed for `pulse --statusline`. |
+| `/api/export` | GET | Download aggregations: `?format=csv&data=daily\|models\|sources\|projects\|sessions&period=<key>` or `?format=json`; honors `&sources=`. |
 | `/api/shutdown` | POST | Stop the server. Requires `X-Pulse: 1`, loopback only. |
 | `/api/update/check` · `/api/update/install` | POST | Update flow. Same guards. |
 | `/api/meters/enable` · `/api/meters/disable` | POST | Toggle account meters (Anthropic + ChatGPT, one gesture). Same guards. |

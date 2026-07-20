@@ -140,7 +140,7 @@ export default function App() {
           <ServerPanel data={data} onStopped={() => setStopped(true)} gfx={{ mode: gfxMode, lite: liteActive, set: setGfxMode }} delay={0.2} />
         </>
       ) : (
-        <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} onStopped={() => setStopped(true)} gfx={{ mode: gfxMode, lite: liteActive, set: setGfxMode }} />
+        <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} srcFilter={srcFilter} onStopped={() => setStopped(true)} gfx={{ mode: gfxMode, lite: liteActive, set: setGfxMode }} />
       )}
     </Shell>
   );
@@ -202,7 +202,47 @@ function PeriodDelta({ cost, prev, label }) {
   );
 }
 
-function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx }) {
+// Export the selected window as CSV/JSON. Plain same-origin GET links with the
+// download attribute — the server route sits behind the same allowRead guard as
+// every /api read. Carries the current period AND the active source filter so a
+// download always matches exactly what's on screen.
+function ExportMenu({ periodKey, srcFilter }) {
+  const [open, setOpen] = useState(false);
+  const href = (extra) => {
+    const p = new URLSearchParams(extra);
+    if (periodKey) p.set('period', periodKey);
+    if (srcFilter && srcFilter.length) p.set('sources', srcFilter.join(','));
+    return '/api/export?' + p.toString();
+  };
+  const csvSets = [
+    ['daily spend', 'daily'],
+    ['by model', 'models'],
+    ['by source', 'sources'],
+    ['by project', 'projects'],
+    ['recent sessions', 'sessions'],
+  ];
+  return (
+    <span className="exportwrap" onMouseLeave={() => setOpen(false)} onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}>
+      <button className={'expbtn' + (open ? ' on' : '')} onClick={() => setOpen(!open)} title="Download dashboard data as CSV or JSON">
+        ⇩ export
+      </button>
+      {open && (
+        <span className="expmenu">
+          {csvSets.map(([label, data]) => (
+            <a key={data} className="expitem" href={href({ format: 'csv', data })} download onClick={() => setOpen(false)}>
+              CSV · {label}
+            </a>
+          ))}
+          <a className="expitem" href={href({ format: 'json' })} download onClick={() => setOpen(false)}>
+            JSON · full payload
+          </a>
+        </span>
+      )}
+    </span>
+  );
+}
+
+function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStopped, gfx }) {
   const periods = data.periods || [];
   let period = periods.find((p) => p.key === periodKey);
   if (!period) period = periods[0];
@@ -254,6 +294,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
               </h2>
               <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
                 <PeriodSelect periods={periods} value={period.key} onChange={setPeriodKey} />
+                <ExportMenu periodKey={period.key} srcFilter={srcFilter} />
                 <Legend period={period} colorMap={colorMaps.src} single={period.singleSource} />
               </div>
             </div>

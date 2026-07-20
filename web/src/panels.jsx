@@ -295,6 +295,14 @@ export function BudgetCard({ budget }) {
           ? <span className="bover">over by {money2(budget.spent - budget.target)}</span>
           : <span>{money2(budget.remaining)} left</span>}
         <span className="bsep">·</span>{resetTxt}
+        {budget.projected != null && (
+          <>
+            <span className="bsep">·</span>
+            <span className={'bpace' + (budget.projected > budget.target ? ' bad' : budget.projected >= 0.8 * budget.target ? ' warn' : '')}>
+              on pace for ~{money(budget.projected)}
+            </span>
+          </>
+        )}
       </div>
     </div>
   );

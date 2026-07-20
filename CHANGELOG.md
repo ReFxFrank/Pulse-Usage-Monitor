@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.17.0
+
+- **Export your data — CSV and JSON:** a new **⇩ export** menu next to the
+  period selector downloads the selected window as CSV — daily spend (with a
+  cost column per source), by model, by source, by project, or the
+  recent-sessions table — or the entire summary payload as JSON. Downloads
+  respect the active source filter and period, so a file always matches exactly
+  what's on screen. CSVs are RFC-4180 quoted with a UTF-8 BOM (Excel-friendly);
+  the `GET /api/export` route sits behind the same DNS-rebinding guard as every
+  other read, and nothing leaves the machine — it's your browser downloading
+  from your own loopback server.
+- **Budget: "on pace for ~$X":** the budget card now projects your month-end
+  spend from the fraction of the month elapsed — e.g. *$30 of $100 · on pace
+  for ~$47* — colouring the pace amber as it approaches your target and red
+  when you're projected to blow through it, so an overrun warns you weeks
+  before it happens. Month budgets only (a rolling 7-day window has no fixed
+  end to project to); suppressed in the first hours of a new month where the
+  math would be meaningless noise.
+
 ## v1.16.1
 
 - **Gemini pricing guard — a tier suffix can never silently mis-price.** The

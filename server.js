@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.16.1';
+const PULSE_VERSION = '1.17.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -2311,21 +2311,82 @@ function budgetConfig() {
 function computeBudget(periods, week, now) {
   const { target, period } = budgetConfig();
   if (!target) return null;
-  let spent = 0, resetsAt = null, label;
+  let spent = 0, resetsAt = null, label, projected = null;
   if (period === 'week') {
     spent = (week && week.cost) || 0; // trailing 7 days
     label = 'last 7 days';
+    // No projection for the rolling week: a trailing window has no fixed end
+    // to project to (its "pace" IS its spend), so `projected` stays null.
   } else {
     const mk = localDateStr(now).slice(0, 7);
     const p = (periods || []).find((x) => x.key === mk);
     spent = p ? p.cost : 0;
     const d = new Date(now);
+    const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
     resetsAt = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(); // start of next month
     label = 'this month';
+    // Straight-line month-end projection: spent scaled by the fraction of the
+    // month elapsed. Suppressed for the first ~half day of a month, where the
+    // tiny denominator would turn one morning session into an absurd figure.
+    const elapsed = (now - monthStart) / (resetsAt - monthStart);
+    if (elapsed > 0.017) projected = spent / elapsed;
   }
   const pct = (spent / target) * 100;
   const state = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : 'ok';
-  return { target, period, label, spent, pct, remaining: Math.max(0, target - spent), resetsAt, state };
+  return { target, period, label, spent, pct, remaining: Math.max(0, target - spent), resetsAt, state, projected };
+}
+
+// ---------------------------------------------------------------------------
+// CSV EXPORT (GET /api/export) — serializes aggregations the dashboard already
+// computes; no data is computed here, so an export always matches the screen.
+// Hand-rolled CSV: RFC-4180 quoting, CRLF rows, cost rounded to 4 decimals so
+// spreadsheets don't inherit float noise.
+// ---------------------------------------------------------------------------
+function csvCell(v) {
+  let s = v == null ? '' : String(v);
+  // Formula-injection defusal (OWASP): a TEXT cell starting with = + - @ would
+  // execute as a formula when the CSV is opened in Excel/Sheets — prefix it
+  // with a quote. Only strings: numeric cells (costs, tokens) must stay
+  // numeric, and a number can legitimately start with "-".
+  if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function csvTable(rows) {
+  return rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+const csvMoney = (n) => Number((n || 0).toFixed(4));
+function exportCsv(payload, period, data) {
+  if (data === 'daily') {
+    const srcs = period.sources || [];
+    const rows = [['date', 'cost_usd', 'tokens', ...srcs.map((s) => 'cost_' + s)]];
+    for (const d of period.daily || []) {
+      rows.push([d.date, csvMoney(d.total), d.tokens, ...srcs.map((s) => csvMoney(d.bySource[s]))]);
+    }
+    return csvTable(rows);
+  }
+  if (data === 'models' || data === 'sources') {
+    const map = (data === 'models' ? period.byModel : period.bySource) || {};
+    const keys = Object.keys(map).sort((a, b) => map[b].cost - map[a].cost);
+    const rows = [[data === 'models' ? 'model' : 'source', 'cost_usd', 'tokens', 'messages']];
+    for (const k of keys) rows.push([k, csvMoney(map[k].cost), map[k].tokens, map[k].messages]);
+    return csvTable(rows);
+  }
+  if (data === 'projects') {
+    const rows = [['project', 'cost_usd', 'tokens', 'messages', 'sessions']];
+    for (const p of period.byProject || []) rows.push([p.project, csvMoney(p.cost), p.tokens, p.messages, p.sessions]);
+    return csvTable(rows);
+  }
+  if (data === 'sessions') {
+    // Whole-session totals (the Recent-sessions table) — not period-scoped.
+    const rows = [['title', 'source', 'models', 'effort', 'cost_usd', 'tokens', 'messages', 'last_activity']];
+    for (const s of payload.recentSessions || []) {
+      rows.push([s.title, s.source, (s.models || []).join('|'),
+        (s.ultracode ? ['ultracode'] : []).concat(s.efforts || []).join('|'),
+        csvMoney(s.cost), s.tokens, s.messages, new Date(s.lastTs).toISOString()]);
+    }
+    return csvTable(rows);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -3715,6 +3776,56 @@ function startServer(port, host, opts) {
         // Slim, memoized feed for `pulse --statusline` (see STATUSLINE FEED).
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(statuslineData()));
+        return;
+      }
+      if (route === '/api/export') {
+        // Download the dashboard's aggregations. Read-only: covered by the
+        // allowRead DNS-rebinding guard above like every /api route. Accepts
+        // the same ?sources= scoping as /api/summary so a download matches
+        // exactly what the dashboard shows.
+        const q = new URLSearchParams(parsed.query || '');
+        let sourceFilter = null;
+        const rawSources = q.get('sources');
+        if (rawSources) {
+          const names = rawSources.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20);
+          if (names.length) sourceFilter = new Set(names);
+        }
+        const payload = buildSummary(sourceFilter);
+        const stamp = localDateStr(Date.now()).replace(/-/g, '');
+        if (q.get('format') === 'json') {
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="pulse-export-' + stamp + '.json"',
+            'Cache-Control': 'no-store',
+          });
+          res.end(JSON.stringify(payload, null, 2));
+          return;
+        }
+        const periodKey = q.get('period') || '';
+        const period = (payload.periods || []).find((p) => p.key === periodKey) || (payload.periods || [])[0];
+        const data = q.get('data') || 'daily';
+        if (!period) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'no data to export yet' }));
+          return;
+        }
+        const csv = exportCsv(payload, period, data);
+        if (!csv) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unknown data set "' + data + '" — use daily|models|sources|projects|sessions' }));
+          return;
+        }
+        // Sessions is the whole-session recent list, not period-scoped — its
+        // filename must not imply a period.
+        const fname = data === 'sessions'
+          ? 'pulse-sessions-' + stamp + '.csv'
+          : 'pulse-' + data + '-' + period.key + '-' + stamp + '.csv';
+        res.writeHead(200, {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="' + fname + '"',
+          'Cache-Control': 'no-store',
+        });
+        res.end(String.fromCharCode(0xFEFF) + csv); // UTF-8 BOM so Excel opens the file correctly
         return;
       }
       if (route === '/api/logs') {

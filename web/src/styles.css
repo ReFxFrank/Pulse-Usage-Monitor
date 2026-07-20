@@ -318,6 +318,29 @@ footer .reading { margin-top: 12px; font-family: var(--mono); font-size: 11.5px;
   color: var(--text-3); font: inherit; font-size: 11.5px; padding: 5px 10px; border-radius: 999px; cursor: pointer;
 }
 .budgetcard .bpchip.on { border-color: rgba(155, 140, 255, 0.6); color: var(--text); background: rgba(155, 140, 255, 0.12); }
+.budgetcard .bpace.warn { color: var(--warn); }
+.budgetcard .bpace.bad { color: #f27878; font-weight: 600; }
+
+/* Export dropdown (spend header). Solid surface, no backdrop-filter — safe in
+   lite-graphics mode. */
+.exportwrap { position: relative; display: inline-flex; }
+.expbtn {
+  font: inherit; font-size: 12px; color: var(--text-3); cursor: pointer;
+  background: var(--glass); border: 1px solid var(--stroke);
+  border-radius: 8px; padding: 4px 10px;
+}
+.expbtn:hover, .expbtn.on { border-color: rgba(155, 140, 255, 0.5); color: var(--text-2); }
+.expmenu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
+  display: flex; flex-direction: column; min-width: 172px;
+  background: #14131c; border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm); padding: 4px; box-shadow: var(--shadow);
+}
+.expitem {
+  font-size: 12px; color: var(--text-2); text-decoration: none;
+  padding: 6px 10px; border-radius: 6px; white-space: nowrap;
+}
+.expitem:hover { background: rgba(155, 140, 255, 0.12); color: var(--text); }
 
 /* ---- connect-your-Claude-account card (meters, no login found) ---- */
 .connectclaude {
