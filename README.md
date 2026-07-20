@@ -25,7 +25,7 @@ logs already on your machine.
 
 - 💸 **Live spend tracking** — current 5-hour block with reset countdown, burn rate,
   today / last 7 days, and a 30-day stacked spend chart. Refreshes every 10 seconds.
-- 📅 **Any period** — rolling 30 days or any past calendar month from the dropdown.
+- 📅 **Any period** — rolling 30 / 90 / 180 days or any past calendar month from the dropdown.
 - 🤖 **Per-model & per-source breakdowns** — cost, tokens, and messages for every model
   and entry point (CLI, desktop app), with stable colors.
 - 🟢 **OpenAI Codex support** — if you also use the [Codex CLI](https://github.com/openai/codex),
@@ -92,7 +92,8 @@ logs already on your machine.
   **"Pulse"** / **"Pulse — Stop"** buttons on your Desktop; `--stop` for scripts.
 - 🪶 **Zero runtime dependencies** — one Node process, built-ins only (`npm ls` is empty).
 - 🔒 **Local-first** — binds to `127.0.0.1`, reads `~/.claude` strictly read-only, and
-  makes **no network calls** except an optional GitHub version check.
+  makes **no network calls** except an optional GitHub version check (plus the
+  opt-in account meters, if you turn them on). Your usage data never leaves the machine.
 
 <div align="center">
   <img src=".github/assets/panels.png" alt="Model breakdowns, effort chips and sessions" width="920" />
@@ -164,7 +165,7 @@ Re-running the installer updates and restarts the service.
 | `--stop`           | Stop the running Pulse instance and exit.                     |
 | `--install-shortcuts` | (Windows) add **"Pulse"** and **"Pulse — Stop"** Desktop shortcuts. |
 | `--no-daemon`      | (Windows exe) stay in the console window instead of backgrounding. |
-| `--no-update-check`| Disable the GitHub version check — Pulse then makes zero network calls. Also: `PULSE_NO_UPDATE_CHECK=1`, or `{"updateCheck": false}` in `~/.pulse/config.json`. |
+| `--no-update-check`| Disable the GitHub version check + community-reach counters. With account meters also off, Pulse then makes zero network calls. Also: `PULSE_NO_UPDATE_CHECK=1`, or `{"updateCheck": false}` in `~/.pulse/config.json`. |
 | `--no-open`        | Don't auto-open the browser (packaged exe).                   |
 | `--effort-setup`   | Print the optional effort-logging hooks snippet.              |
 | `--version` / `--help` | The usual.                                               |
@@ -399,8 +400,11 @@ amount you'll be charged. Verify current list prices at
 | `/api/summary` | GET | Full JSON payload — all aggregations + server/update state. |
 | `/api/health` | GET | `{ ok, version, pid }` |
 | `/api/logs` | GET | Recent server log lines (the Server panel's log view). |
+| `/api/statusline` | GET | Slim, memoized feed for `pulse --statusline`. |
 | `/api/shutdown` | POST | Stop the server. Requires `X-Pulse: 1`, loopback only. |
 | `/api/update/check` · `/api/update/install` | POST | Update flow. Same guards. |
+| `/api/meters/enable` · `/api/meters/disable` | POST | Toggle account meters (Anthropic + ChatGPT, one gesture). Same guards. |
+| `/api/discord/enable` · `/api/discord/disable` | POST | Toggle Discord Rich Presence. Same guards. |
 | `/api/budget/set?amount&period` | POST | Set/clear the spend budget (`amount<=0` clears). Same guards. |
 
 ## 📁 Repository layout
@@ -410,7 +414,7 @@ amount you'll be charged. Verify current list prices at
 | `server.js` | The whole backend: parsing, cache, aggregation, HTTP, updates, background mode. Zero runtime dependencies. |
 | `web/` | React frontend (Vite + Radix + Framer Motion). Built output in `web/dist` is committed and served. |
 | `build/make-exe.mjs` | Packages server + frontend into a single executable (Node SEA). |
-| `.github/workflows/release.yml` | Builds `pulse.exe` / `pulse-linux` and publishes a Release. |
+| `.github/workflows/release.yml` | Builds `pulse.exe` / `pulse-linux` / `pulse-macos` (3-OS matrix) and publishes a Release. |
 | `install.sh` / `pulse.sh` / `pulse.cmd` | VPS installer and launchers. |
 
 ## 📝 License

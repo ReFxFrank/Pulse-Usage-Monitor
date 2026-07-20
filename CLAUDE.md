@@ -30,7 +30,7 @@ the old name; git remotes redirect).
 ## Layout
 
 - `server.js` — everything: parsers, pricing, aggregation, meters, Discord
-  presence, self-update, daemon mode, HTTP server. ~3000 lines, organized in
+  presence, self-update, daemon mode, HTTP server. ~4500 lines, organized in
   ALL-CAPS banner sections; grep for `---` banners to navigate.
 - `web/` — Vite + React (Radix, framer-motion) frontend; `web/dist` is
   committed (the server serves it; the SEA build embeds it).
@@ -50,9 +50,9 @@ the old name; git remotes redirect).
 | Codex rollout parsing | `parseCodexFile` (token_count deltas, `turn_context` model+effort, replay-safe keys, `preModelEntries` backfill) |
 | Other-agent parsing | `parseGeminiFile` (`~/.gemini/tmp/*/chats/session-*.jsonl`; `tokens{input(incl cached),output,cached,thoughts,tool}`+`model`; dedup by id last-write-wins; provider `google`/source `gemini`), `parseContinueFile` (`~/.continue/dev_data/*/tokensGenerated.jsonl`; camelCase, `{name,timestamp,data}` envelope; LOCAL ESTIMATES → `estimate:true`; dedup by path+lineIndex; provider inferred from model), `parseClineFile` (VS Code `globalStorage/saoudrizwan.claude-dev/tasks/*/ui_messages.json`; `api_req_started.text` is stringified JSON `{tokensIn,tokensOut,cacheWrites,cacheReads,cost}`; uses Cline's OWN `cost`; model from sibling `task_metadata.json` `model_usage` state-snapshot); `agentEntry` skeleton; `clineTaskFiles`/`clineExtensionDirs` (Code/Insiders/VSCodium/Cursor/Windsurf + `.vscode-server`); all dispatched by set-membership in `parseAll` |
 | Pricing | `PRICING` (Anthropic + Zhipu/Z.ai `glm-*`, which arrive via Claude Code's Z.ai Anthropic-compatible proxy and price through the Claude path w/ longest-prefix match), `PRICING_OPENAI` (exact rows; prefix fallback ONLY for date suffixes — OpenAI `-mini`/`-pro` are different models), `PRICING_GOOGLE` (`priceForGoogle`, longest-prefix so `-flash-lite` beats `-flash` and dated/-preview fall back; cached=10% of input; July 2026 Gemini rates); `costForEntry` dispatches `openai`→OpenAI, `google`→Google, else Claude path; unknown models log once + `__default__` |
-| Effort chips | `parseLocalCommand`, `parseEffortStdout` (interactive-picker confirmation echoes), `mergeModes`, `annotateModes` (state-snapshot join: latest event ≤ entry.ts; `parseEffort` is the immutable Codex-side input) |
+| Effort chips | `parseLocalCommand`, `parseEffortStdout` (interactive-picker confirmation echoes), `mergeModes`, `annotateModes` (state-snapshot join: latest event ≤ entry.ts; `parseEffort` is the immutable Codex-side input); CLI: `--effort-setup` (`effortSetup`) PRINTS (never writes) a Claude Code settings.json hook snippet, `--mode-hook` (`runModeHook`) is that hook — writes the settings-persisted effort level to the `~/.pulse` modes sidecar (covers the cross-session case transcript parsing can't; still never writes under `~/.claude`) |
 | Analytics breakdowns | `buildPeriod` also emits per-period `effortSpend` (bucket = ultracode\|level\|default), `byProject` (top 30 by cost + `(other)`), `liveCost` — all LIVE-only (archive keeps no per-entry effort/project); UI: `EffortSpendBars`/`ProjectBars` (panels.jsx) |
-| Period comparison | each period carries `prev` = `{cost,tokens,messages}` for the immediately-preceding equal-length window (rolling: the N days before; month: prior calendar month), via the `sumWindow` closure in `aggregate` (live+archive merge, same as buildPeriod); UI: `PeriodDelta` chip on the Spend header (App.jsx), hidden when `prev.cost<=0` |
+| Period comparison | each period carries `prev` = `{cost,tokens,messages}` for the immediately-preceding equal-length window (rolling: the N days before; month: prior calendar month), via the `windowTotals` closure in `aggregate` (reuses `buildPeriod` so the prev baseline merges live+archive identically to a period's own cost; month prev just references the prior month's already-built period); UI: `PeriodDelta` chip on the Spend header (App.jsx), hidden when `prev.cost<=0` |
 | Budget goal | `computeBudget(periods, week, now)` → `payload.budget` = `{target,period,label,spent,pct,remaining,resetsAt,state}` (state ok\|warn≥80\|over≥100); month = current calendar-month period cost (resets 1st), week = trailing-7d `week.cost` (rolling); config `budget`+`budgetPeriod`, set via POST `/api/budget/set?amount&period` (allowMutation; amount≤0 clears); UI: `BudgetCard` (panels.jsx, settable inline) |
 | 5h block | `aggregate` — official window from meters `five_hour.resets_at` when available (`official: true`), else log reconstruction |
 | Historical retention | `sealHistory` (writes sealed past days → `~/.pulse/history/YYYY-MM.json`, gated 5 min, re-seals until pruned), `readHistory` (mtime-cached), `filterHistory`; merged in `aggregate`/`buildPeriod` — live day wins, archive fills gaps (never double-counts); augments `totals`; on by default (`{"history": false}` off) |
@@ -72,7 +72,9 @@ the old name; git remotes redirect).
 Config keys: `accountMeters`, `codexAccountUsage` (separate consent — the
 dashboard toggle sets both, a pre-1.6.0 `accountMeters` alone must NOT enable
 the chatgpt.com call), `discordPresence`, `discordClientId`,
-`discordRotateSecs` (15–300), `discordLargeImage`, `history` (retention; on
+`discordRotateSecs` (15–300), `discordLargeImage` (idle/fallback art key) +
+`discordClaudeImage`/`discordCodexImage` (per-provider large_image overrides),
+`history` (retention; on
 unless `false`), `alerts` (limit alerts; on unless `false`), `alertThresholds`
 (array of pct 1–100; default `[80,95]`), `budget` (USD spend target; unset =
 off) + `budgetPeriod` (`month`|`week`, default month; set via `/api/budget/set`),
@@ -84,7 +86,10 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `PULSE_REACH_REPO_API`, `PULSE_REACH_CACHE_MS`, `PULSE_METERS_API`,
 `PULSE_METERS_CACHE_MS`, `PULSE_CODEX_USAGE_API`, `PULSE_CODEX_USAGE_CACHE_MS`,
 `PULSE_DISCORD_IPC`, `PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`,
-`PULSE_DISCORD_CLIENT_ID`, `PULSE_MODES_FILE`, `PULSE_FAKE_DARWIN`.
+`PULSE_DISCORD_CLIENT_ID`, `PULSE_MODES_FILE`, `PULSE_FAKE_DARWIN`,
+`PULSE_UPDATE_API` (update-check endpoint override), `PULSE_NO_UPDATE_CHECK`
+(env form of `--no-update-check`), `PULSE_UPDATE_NO_RELAUNCH` (test hook),
+`PULSE_SECURITY_BIN` (macOS Keychain `security` binary override).
 
 ## Release process (established, do not improvise)
 
