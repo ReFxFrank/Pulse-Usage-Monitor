@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.16.0';
+const PULSE_VERSION = '1.16.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -402,8 +402,13 @@ function priceForOpenAI(model) {
 // real per-turn token counts. On a paid key these are actual API rates; on the
 // free tier they express relative usage, same caveat as the other tables.
 // Context caching bills cached input at ~10% of the input rate. Longest-prefix
-// match (like the Claude table) so dated / -preview / -latest suffixes fall back
-// to their base model, and the longer -flash-lite key wins over -flash.
+// match, but fallback is allowed ONLY for snapshot-style suffixes
+// (-preview/-latest/-exp/-thinking plus an optional date/build stamp, or a
+// bare stamp like -001). Tier and modality suffixes (-lite, -8b, -image,
+// -preview-tts, …) are DIFFERENT models at different prices: without a row of
+// their own they fall through to the LOGGED default — "gemini-3.5-flash-lite"
+// must never silently price at gemini-3.5-flash rates (same rule as the
+// OpenAI table's -mini/-pro).
 // ---------------------------------------------------------------------------
 const PRICING_GOOGLE = {
   'gemini-3-pro':          { input: 2,    output: 12 },
@@ -422,12 +427,19 @@ const GOOGLE_CACHE_READ_MULT = 0.10;
 function priceForGoogle(model) {
   let p = PRICING_GOOGLE[model];
   if (!p && model) {
-    // Longest PRICING_GOOGLE key that prefixes the model string wins — so
-    // "gemini-2.5-flash-lite" beats "gemini-2.5-flash", and dated/-preview
-    // variants ("gemini-3-pro-preview-11-2025") price as their base model.
+    // Longest PRICING_GOOGLE key that prefixes the model string wins, but only
+    // when the remainder is a snapshot-style suffix: -preview/-latest/-exp/
+    // -thinking, optionally followed by ONE date/build stamp ("-preview-05-20",
+    // "-exp-1206"), or a bare stamp ("-001", "-11-2025", "-20250520"). Any
+    // other remainder — a tier like "-lite"/"-8b", a modality like "-image" or
+    // "-preview-tts" — is a DIFFERENT model at a different price: mispricing
+    // must be visible, never silent, so it falls through to the logged default
+    // instead of the parent tier's rate.
     let best = '';
     for (const key of Object.keys(PRICING_GOOGLE)) {
-      if (key !== '__default__' && model.startsWith(key) && key.length > best.length) best = key;
+      if (key === '__default__' || !model.startsWith(key) || key.length <= best.length) continue;
+      const rest = model.slice(key.length);
+      if (/^-(?:(?:preview|latest|exp|thinking)(?:-(?:\d{1,2}-\d{2,4}|\d{4}-\d{2}-\d{2}|\d{8}|\d{3,4}))?|\d{3,4}|\d{1,2}-\d{2,4}|\d{4}-\d{2}-\d{2}|\d{8})$/.test(rest)) best = key;
     }
     if (best) p = PRICING_GOOGLE[best];
   }

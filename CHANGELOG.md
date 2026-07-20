@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.16.1
+
+- **Gemini pricing guard — a tier suffix can never silently mis-price.** The
+  Google table matched by longest prefix alone, so a lite-tier model id with no
+  row of its own (e.g. a future `gemini-3.5-flash-lite`) would have priced
+  **silently at the parent flash rate** — roughly 6× a lite rate — with no
+  warning, because a prefix match suppressed the unknown-model log. Prefix
+  fallback is now allowed only for snapshot-style suffixes —
+  `-preview`/`-latest`/`-exp`/`-thinking`, each optionally followed by one
+  date/build stamp, or a bare stamp like `-001` — the same rule the OpenAI
+  table already applies to `-mini`/`-pro`. Any other remainder (a tier like
+  `-lite`/`-8b`, a modality like `-image` or `-preview-tts`) falls through to
+  default pricing **with** the unknown-model warning, so a gap in the table is
+  always visible, never silent. The table itself was verified complete against
+  Google's July-2026 lineup — no currently-shipping model was affected.
+- **Pricing locked with tests:** the pricing suite now asserts the full Gemini
+  table at exact list rates (plus the dated-variant fallback and the new
+  guard), the Claude cache-write/read multipliers at exact rates
+  (×1.25 / ×2.0 / ×0.10), and both sides of Sonnet 5's introductory-price date
+  boundary (2/10 through 2026-08-31, 3/15 after — keyed on each entry's own
+  date, asserted via pinned calendar months so the suite stays valid whenever
+  it runs).
+
 ## v1.16.0
 
 - **Friendlier account connect (no terminal required):** when account meters are
