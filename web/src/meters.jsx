@@ -1,5 +1,28 @@
+import { useState, useEffect } from 'react';
 import { Card, InfoTip } from './panels.jsx';
-import { durClock, useTick, ago, tokens, dayLabel } from './lib.js';
+import { durClock, useTick, ago, tokens, dayLabel, postJson } from './lib.js';
+
+// Shown when account meters are on but no Claude Code login is found (or the
+// token expired). Guides the user to log in from ANY Claude Code surface and
+// re-detects on demand — Pulse only ever READS the token, never mints one.
+function ConnectClaude({ checking, onRecheck, expired }) {
+  return (
+    <div className="connectclaude">
+      <div className="cc-title">{expired ? 'Reconnect your Claude account' : 'Connect your Claude account'}</div>
+      <div className="sub cc-body">
+        {expired
+          ? 'Your saved Claude Code login looks stale. '
+          : 'To show your official 5-hour and weekly usage, log in to Claude Code — '}
+        {!expired && <>the <b>desktop app</b>, an <b>IDE extension</b>, or <code>claude</code> in a terminal all work. </>}
+        {expired && <>Start any Claude Code session (desktop, IDE, or <code>claude</code> in a terminal) to refresh it. </>}
+        Pulse reads the login <b>read-only</b> — it never sees your password and never writes credentials.
+      </div>
+      <button className="btn albtn" disabled={checking} onClick={onRecheck}>
+        {checking ? 'Checking…' : 'Recheck now'}
+      </button>
+    </div>
+  );
+}
 
 // "Account limits · official" — provider-issued usage gauges.
 //  - Claude (opt-in): Anthropic's account meter via your local login — unified
@@ -11,19 +34,33 @@ import { durClock, useTick, ago, tokens, dayLabel } from './lib.js';
 //    usage endpoint — the one thing Anthropic's percent-only API can't give.
 export function MetersCard({ meters, codex, codexUsage, delay = 0.18 }) {
   useTick(1000); // live reset countdowns
-  const anth = meters && meters.enabled ? meters : null;
+  // "Recheck now" override: the recheck endpoint returns fresh meters; show them
+  // immediately, then let the normal poll take over (cleared when it updates).
+  const [override, setOverride] = useState(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => { setOverride(null); }, [meters && meters.fetchedAt, meters && meters.status]);
+  const recheck = async () => {
+    setChecking(true);
+    try { const r = await postJson('/api/meters/recheck'); if (r && r.meters) setOverride(r.meters); } catch (_) {}
+    setChecking(false);
+  };
+
+  const anthRaw = override || meters;
+  const anth = anthRaw && anthRaw.enabled ? anthRaw : null;
   const cxu = codexUsage && codexUsage.enabled ? codexUsage : null;
   if (!anth && !codex && !cxu) return null;
 
   const anthBody = anth && (() => {
-    if (anth.status === 'loading') {
+    if (anth.status === 'loading' || checking) {
       return <div className="sub">Fetching official usage from your Claude account…</div>;
     }
     if (anth.status === 'no-login') {
-      // Normal on a Codex-only machine — informative, not alarming.
-      return <div className="sub">Claude meters: {anth.error || 'no Claude Code login on this machine.'}</div>;
+      return <ConnectClaude checking={checking} onRecheck={recheck} />;
     }
     const hasBars = anth.buckets && anth.buckets.length > 0;
+    if (anth.status === 'expired' && !hasBars) {
+      return <ConnectClaude checking={checking} onRecheck={recheck} expired />;
+    }
     if (anth.status === 'expired' || anth.status === 'error' || anth.status === 'rate-limited') {
       // A throttled or failed refresh is not data loss: keep showing the last
       // good numbers with an honest note about their age.

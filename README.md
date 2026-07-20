@@ -404,6 +404,7 @@ amount you'll be charged. Verify current list prices at
 | `/api/shutdown` | POST | Stop the server. Requires `X-Pulse: 1`, loopback only. |
 | `/api/update/check` · `/api/update/install` | POST | Update flow. Same guards. |
 | `/api/meters/enable` · `/api/meters/disable` | POST | Toggle account meters (Anthropic + ChatGPT, one gesture). Same guards. |
+| `/api/meters/recheck` | POST | Re-detect the Claude Code login now (the connect card's "Recheck now"). Same guards. |
 | `/api/discord/enable` · `/api/discord/disable` | POST | Toggle Discord Rich Presence. Same guards. |
 | `/api/budget/set?amount&period` | POST | Set/clear the spend budget (`amount<=0` clears). Same guards. |
 

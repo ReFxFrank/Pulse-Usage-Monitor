@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.15.1';
+const PULSE_VERSION = '1.16.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -3136,6 +3136,7 @@ function codexUsageForPayload(background) {
 const DISCORD_CLIENT_ID_DEFAULT = '1527236432375189535';
 const DISCORD_TICK_MS = parseInt(process.env.PULSE_DISCORD_TICK_MS, 10) || 15 * 1000;
 const DISCORD_RETRY_MS = 30 * 1000;
+const DISCORD_FAST_RETRY_MS = 4 * 1000; // quick re-sweeps right after a miss (startup race)
 const PULSE_REPO_URL = 'https://github.com/ReFxFrank/Pulse-Usage-Monitor';
 
 function discordEnabled() { return readConfig().discordPresence === true; }
@@ -3157,6 +3158,7 @@ let discordConnecting = false;
 let discordNonce = 0;
 let discordLastActivity = '';
 let discordNextAttemptAt = 0;
+let discordNotFoundStreak = 0; // consecutive failed sweeps → fast retries first, then back off
 
 // Candidate IPC socket paths, most likely first. Discord numbers them 0-9;
 // Linux packagings (snap/flatpak) nest them one directory deeper.
@@ -3164,7 +3166,13 @@ function discordIpcCandidates() {
   if (process.env.PULSE_DISCORD_IPC) return [process.env.PULSE_DISCORD_IPC];
   const out = [];
   if (process.platform === 'win32') {
-    for (let i = 0; i < 10; i++) out.push('\\\\.\\pipe\\discord-ipc-' + i);
+    // Discord's named pipe lives in the same object namespace under either
+    // prefix; some Node/Windows combos connect via one but not the other, so
+    // try both forms of each index (\\.\pipe\ then \\?\pipe\).
+    for (let i = 0; i < 10; i++) {
+      out.push('\\\\.\\pipe\\discord-ipc-' + i);
+      out.push('\\\\?\\pipe\\discord-ipc-' + i);
+    }
     return out;
   }
   const bases = [];
@@ -3211,12 +3219,27 @@ function discordConnect() {
     if (idx >= candidates.length) {
       discordConnecting = false;
       discordState.status = 'discord-not-found';
-      discordState.error = 'Discord desktop client not found — is it running? (Browser Discord has no local IPC.)';
-      discordNextAttemptAt = Date.now() + DISCORD_RETRY_MS;
+      discordState.error = 'Discord desktop client not found — is it running? (Browser Discord has no local IPC.) ' +
+        'If Discord is open, make sure it and Pulse run at the same privilege level (both normal, or both as admin). ' +
+        'Pulse retries automatically.';
+      // Fast re-sweeps for the first few misses (covers a Discord/Pulse startup
+      // race — heals in seconds instead of leaving "not found" up for 30s),
+      // then back off. A one-shot timer drives the quick retries so they don't
+      // wait for the slower 15s tick.
+      discordNotFoundStreak++;
+      const wait = discordNotFoundStreak <= 4 ? DISCORD_FAST_RETRY_MS : DISCORD_RETRY_MS;
+      discordNextAttemptAt = Date.now() + wait;
+      if (wait < DISCORD_TICK_MS) {
+        const t = setTimeout(() => {
+          if (discordEnabled() && !discordSock && !discordConnecting && Date.now() >= discordNextAttemptAt) discordConnect();
+        }, wait + 50);
+        if (t.unref) t.unref();
+      }
       return;
     }
     const p = candidates[idx++];
-    const sock = net.connect(p);
+    let sock;
+    try { sock = net.connect(p); } catch (_) { return tryNext(); } // bad path → next candidate
     let buf = Buffer.alloc(0);
     let settled = false;
     const fail = () => {
@@ -3224,7 +3247,7 @@ function discordConnect() {
       try { sock.destroy(); } catch (_) {}
       tryNext();
     };
-    sock.setTimeout(2000, fail);
+    sock.setTimeout(3000, fail); // connect + handshake; dead Windows pipes still error instantly
     sock.on('error', () => {
       if (settled) return fail();
       // post-handshake error: drop and retry later
@@ -3247,6 +3270,7 @@ function discordConnect() {
         if (!settled && msg.evt === 'READY') {
           settled = true;
           discordConnecting = false;
+          discordNotFoundStreak = 0; // connected — reset the fast-retry counter
           discordSock = sock;
           discordReady = true;
           discordState.status = 'ok';
@@ -3726,6 +3750,28 @@ function startServer(port, host, opts) {
         codexUsageState.nextAttemptAt = 0;
         refreshCodexUsage(); // async; the summary poll picks it up
         // Respond after the first fetch so the card can render immediately.
+        refreshAccountMeters(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, meters: metersForPayload() }));
+        });
+        return;
+      }
+      if (route === '/api/meters/recheck') {
+        if (!allowMutation(req, res)) return;
+        // "Recheck now" from the connect card: force a fresh credential lookup +
+        // immediate attempt (e.g. the user just logged into Claude Code) so
+        // meters light up without restarting or waiting for the poll cadence.
+        if (!metersEnabled()) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, meters: metersForPayload() }));
+          return;
+        }
+        credCache = { at: 0, cred: null };
+        meters429Streak = 0;
+        metersState.nextAttemptAt = 0;
+        codexUsage429Streak = 0;
+        codexUsageState.nextAttemptAt = 0;
+        refreshCodexUsage();
         refreshAccountMeters(() => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, meters: metersForPayload() }));

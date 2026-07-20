@@ -23,6 +23,7 @@ bash test/discord.test.sh     # one suite
 | `analytics.test.sh` | Per-period spend by effort level (incl. ultracode/default) and by project (sorted by cost, session counts, `liveCost`) |
 | `model-families.test.sh` | Model-string → provider-family classifier (Anthropic/OpenAI/Google/DeepSeek/GLM/Meta/xAI/Qwen/Mistral/Cohere/other) + family metadata |
 | `meters-polling.test.sh` | Polling discipline: dashboard drives the usage-endpoint refresh; status line / Discord only trickle it (counting mock verifies no background polling) |
+| `meters-recheck.test.sh` | Account-connect "Recheck now": no-login while enabled, then the credential appears → `POST /api/meters/recheck` picks it up immediately with live buckets (no restart); token never logged |
 | `alerts.test.sh` | Limit alerts: Claude meters + Codex snapshot windows at/above a threshold are flagged, sorted most-urgent-first, provider-labelled; thresholds configurable; `alerts:false` disables |
 | `heatmap.test.sh` | Activity heatmap: entries land in the right weekday×hour cell (local time), cells sum cost/tokens/messages, max tracking correct |
 | `reach.test.sh` | Community reach: sums release-asset `download_count` across all releases + reads repo `stargazers_count` from public GitHub, exposes `payload.reach`, honours the update-check opt-out (flag + config) |

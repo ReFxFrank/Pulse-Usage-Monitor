@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.16.0
+
+- **Friendlier account connect (no terminal required):** when account meters are
+  on but no Claude Code login is found, the meters card now shows a clear
+  **"Connect your Claude account"** panel — log in from *any* Claude Code surface
+  (the desktop app, an IDE extension, or `claude` in a terminal) and hit
+  **Recheck now** to have Pulse pick up the login on the spot, no restart. Pulse
+  still only ever *reads* the token (read-only, never sees your password, never
+  writes credentials) — there's no OAuth or credential handling in Pulse itself.
+  New endpoint `POST /api/meters/recheck` drives the button.
+- **Discord presence reconnects fast after a restart:** a Pulse restart while
+  Discord is already running could briefly show "discord-not-found" and then
+  take up to 30s to recover (a startup race on the IPC pipe). Pulse now
+  re-sweeps quickly (~4s) for the first few misses before backing off, so it
+  reconnects in seconds; it also tries both Windows pipe forms (`\\.\pipe\` and
+  `\\?\pipe\`), guards against a bad-path throw, and the not-found message now
+  notes the common fix (run Discord and Pulse at the same privilege level).
+
 ## v1.15.1
 
 Hardening pass (adversarial review of the recent features):
