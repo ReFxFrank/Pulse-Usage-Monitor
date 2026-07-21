@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.23.2
+
+- **Strip: a real popover, styled like OpenUsage's.** Clicking the taskbar
+  strip now opens a native card-style panel: **Total Spend** in its own
+  rounded card with pill tabs (Today / 7 Days / 30 Days / All Time), a
+  per-source spend **donut** with legend, then a card per provider —
+  **Claude** and **Codex** each with their official meter bars ("% left",
+  `~N% left at reset` projection, reset countdown), **Today / Last 7 Days /
+  Last 30 Days** spend rows (7-day split computed from your daily history),
+  and a 30-day **Usage Trend** bar chart. Dismissed by clicking away or
+  Escape; "Open dashboard →" at the bottom. All WinForms + GDI, zero deps,
+  DPI-scaled.
+- **Popover polish from live 4K testing:** the click-vs-drag threshold now
+  scales with DPI (clicks on a 150%-scaled taskbar no longer get eaten as
+  micro-drags), tab labels can't be clipped by neighboring controls, and all
+  money renders as `$1,234.56`-style fixed two-decimal (invariant culture —
+  no locale surprises).
+- **Fixed mojibake in the strip ("Codex Â· weekly").** Windows PowerShell 5.1
+  decodes HTTP responses as Latin-1 when no charset is declared. The strip
+  now fetches with a forced-UTF-8 client, and the server declares
+  `charset=utf-8` on `/api/summary` and `/api/statusline` so any client
+  decodes them correctly.
+- **Hardening from the adversarial review** (5 finder lenses, 3 independent
+  refuters per finding; 13 confirmed, all fixed):
+  - The 9s usage↔spend flip (and 30s data refresh) no longer rebuilds the
+    strip mid-interaction — rebuilding disposed the very label your mouse was
+    captured on, killing drags (position never saved, strip snapped back) and
+    silently swallowing clicks that spanned a tick.
+  - The popover's summary fetch now has a 5s timeout (WebClient's
+    DownloadString had a 100-second default and ran on the UI thread — a
+    wedged server could freeze the whole strip).
+  - Trend charts no longer clip today's bar at 100% display scaling
+    (PowerShell's `[int]` rounds-to-nearest; 290/30 rounded up and pushed the
+    last bar exactly off the panel).
+  - The 7 Days donut is now a real per-source split over the same calendar
+    days as the providers' "Last 7 Days" rows (it previously showed the
+    rolling-168h `week.cost`, which disagreed with the rows by design).
+  - Token counts scale B/M/K instead of always dividing by 1e9 (small
+    accounts saw "0.00B tokens").
+  - The Claude card's empty-meters message now tells the truth per
+    `meters.status`: opt-in off, no login, expired token, or genuinely
+    warming up/rate-limited — and stale retained meters are labeled.
+  - Exit/handoff decisions made by the first poll (which runs before the
+    message loop, where `Application::Exit()` is a no-op) are honored —
+    no more ~30s zombie strip after a quick off-toggle, no doomed
+    mutex-blocked sibling on a version handoff at startup.
+  - The crash-relaunch loop only re-spawns when the strip actually ran
+    (guards against an infinite spawn loop under Constrained Language Mode,
+    where Add-Type/New-Object fail before a window ever exists).
+
 ## v1.23.1
 
 - **Strip: stable at last — ported the technique from openusage-windows.**
