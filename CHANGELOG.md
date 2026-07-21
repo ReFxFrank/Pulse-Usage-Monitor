@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.20.1
+
+- **Long lists collapse:** the By model / By source / By project bars now show
+  their **top 8** with a *"show all N ▾"* expander (and *"show less ▴"* to
+  fold back). With v1.20.0's content-sized cards, a 17-project list towered
+  next to a 3-row By-effort card and left the page lopsided with empty space —
+  now the columns stay balanced regardless of how many projects or models you
+  have, and the long tail is one click away.
+
 ## v1.20.0
 
 - **Mini overview v2:** the `#mini` panel grew into a full at-a-glance

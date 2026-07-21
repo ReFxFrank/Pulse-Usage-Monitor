@@ -42,6 +42,7 @@ PORT=4895
 # short foreground gate (400ms); the background trickle stays at its 15-min default
 PULSE_HOME=$PH CLAUDE_DIR=$CL CODEX_DIR=$CX \
 PULSE_METERS_API=http://127.0.0.1:4875/usage-ok PULSE_METERS_CACHE_MS=400 \
+PULSE_SUMMARY_MEMO_MS=0 \
 node "$ROOT/server.js" --port $PORT --no-update-check >"$TMP/srv.log" 2>&1 &
 SRV=$!
 sleep 2

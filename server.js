@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.20.0';
+const PULSE_VERSION = '1.20.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -2240,7 +2240,11 @@ function collectTitles(obj, fileName, map) {
 // the account-meter refresh (see metersForPayload); the dashboard drives it at
 // the normal cadence. This keeps Pulse from polling the shared, rate-limited
 // usage endpoint every couple of minutes around the clock.
-const SUMMARY_MEMO_MS = 2500; // unfiltered payloads are shared this long
+// Unfiltered payloads are shared this long. PULSE_SUMMARY_MEMO_MS is a test
+// hook (0 disables) — timing-sensitive suites assert the METERS trickle
+// discipline and must not race the memo window.
+const _smm = parseInt(process.env.PULSE_SUMMARY_MEMO_MS || '', 10);
+const SUMMARY_MEMO_MS = isFinite(_smm) && _smm >= 0 ? _smm : 2500;
 let summaryMemo = { at: 0, payload: null };
 function buildSummary(sourceFilter, opts) {
   const background = !!(opts && opts.background);

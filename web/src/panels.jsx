@@ -348,18 +348,35 @@ export function Heatmap({ heatmap }) {
 
 // horizontal bars for by-model / by-source. `modelLogos` swaps the color chip
 // for a provider mark (recognized per model family) on the by-model list.
+// Long lists clamp to the top N with an inline expander — a 17-project card
+// must not tower over its 3-row neighbour (the grid sizes cards to content),
+// and the top rows are what you look at anyway. Bars are pre-sorted by cost.
+const CLAMP_ROWS = 8;
+function useClamp(rows) {
+  const [open, setOpen] = useState(false);
+  const more = rows.length - CLAMP_ROWS;
+  const shown = open || more <= 0 ? rows : rows.slice(0, CLAMP_ROWS);
+  const toggle = more > 0 ? (
+    <button className="barmore" onClick={() => setOpen(!open)}>
+      {open ? 'show less ▴' : `show all ${rows.length} ▾`}
+    </button>
+  ) : null;
+  return [shown, toggle];
+}
+
 export function BarList({ rows, modelLogos = false, estimatedSources = [] }) {
   let max = 0;
   rows.forEach((r) => { if (r.cost > max) max = r.cost; });
   if (max <= 0) max = 1;
   const est = new Set(estimatedSources);
+  const [shown, moreToggle] = useClamp(rows);
   return (
     <>
       {/* the bar encodes spend, not tokens — spell it out so a low-token but
           costly model (or vice-versa) never looks mis-sized next to its numbers. */}
       <div className="barhint">bar length = spend · numbers show $ · tokens</div>
       <div className="hbars">
-      {rows.map((r) => (
+      {shown.map((r) => (
         <InfoTip key={r.name} text={`${modelLogos ? FAMILY_META[modelFamily(r.name)].label + ' · ' : ''}${r.name} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs`}>
           <div className="hbar">
             <div className="nm">{modelLogos ? <ModelLogo model={r.name} size={16} /> : <i style={{ background: r.color }} />}{r.name}{est.has(r.name) && <sup className="estmark" title="Locally-estimated usage, not provider-billed">est</sup>}</div>
@@ -380,6 +397,7 @@ export function BarList({ rows, modelLogos = false, estimatedSources = [] }) {
         </InfoTip>
       ))}
       </div>
+      {moreToggle}
     </>
   );
 }
@@ -431,9 +449,11 @@ export function ProjectBars({ rows }) {
   let max = 0;
   rows.forEach((r) => { if (r.cost > max) max = r.cost; });
   if (max <= 0) max = 1;
+  const [shown, moreToggle] = useClamp(rows);
   return (
+    <>
     <div className="hbars">
-      {rows.map((r) => {
+      {shown.map((r) => {
         const special = r.project === '(other)' || r.project === '(unknown)';
         const name = special ? r.project : projectBase(r.project);
         return (
@@ -450,6 +470,8 @@ export function ProjectBars({ rows }) {
         );
       })}
     </div>
+    {moreToggle}
+    </>
   );
 }
 

@@ -94,7 +94,7 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `PULSE_METERS_CACHE_MS`, `PULSE_CODEX_USAGE_API`, `PULSE_CODEX_USAGE_CACHE_MS`,
 `PULSE_DISCORD_IPC`, `PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`,
 `PULSE_DISCORD_CLIENT_ID`, `PULSE_MODES_FILE`, `PULSE_FAKE_DARWIN`,
-`PULSE_METER_PROJ_MIN_MS`,
+`PULSE_METER_PROJ_MIN_MS`, `PULSE_SUMMARY_MEMO_MS` (0 disables the memo — timing-sensitive suites),
 `PULSE_UPDATE_API` (update-check endpoint override), `PULSE_NO_UPDATE_CHECK`
 (env form of `--no-update-check`), `PULSE_UPDATE_NO_RELAUNCH` (test hook),
 `PULSE_SECURITY_BIN` (macOS Keychain `security` binary override).
