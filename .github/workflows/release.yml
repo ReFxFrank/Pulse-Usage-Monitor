@@ -48,6 +48,31 @@ jobs:
         shell: bash
         run: ./dist-exe/${{ matrix.artifact }} --help
 
+      # Pulse Strip: the Windows taskbar companion (strip/, C# — ported from
+      # openusage-windows under MIT), published as its own single-file exe.
+      - uses: actions/setup-dotnet@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build Pulse Strip (Windows companion)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          dotnet publish strip/PulseStrip.csproj -c Release -r win-x64 --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:DebugType=none \
+            -o dist-strip
+          ls -la dist-strip/pulse-strip.exe
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: pulse-strip.exe
+          path: dist-strip/pulse-strip.exe
+          if-no-files-found: error
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -71,6 +96,7 @@ jobs:
             dist/pulse.exe
             dist/pulse-linux
             dist/pulse-macos
+            dist/pulse-strip.exe
           generate_release_notes: true
           body: |
             **Pulse** — a local Claude Code usage dashboard.
@@ -80,6 +106,11 @@ jobs:
               window) and the dashboard opens at http://localhost:4747. Logs, updates and Stop live
               in the dashboard's **Server panel**. SmartScreen may warn because the binary is
               unsigned: click **More info → Run anyway**.
+            - **Windows taskbar strip (optional):** `pulse-strip.exe` — put it next to `pulse.exe`
+              and flip **Pulse Strip** on in the Server panel: provider % left + spend right on the
+              taskbar, click for a popover with meters, spend and trends. Ported from
+              [openusage-windows](https://github.com/CheesyPoofs346/openusage-windows) (MIT) and fed
+              by your local Pulse server.
             - **Linux:** `pulse-linux` — `chmod +x pulse-linux && ./pulse-linux`
             - **macOS (Apple Silicon):** `pulse-macos` — `chmod +x pulse-macos && xattr -d com.apple.quarantine pulse-macos; ./pulse-macos`
               (the `xattr` clears Gatekeeper's quarantine on the unsigned binary)

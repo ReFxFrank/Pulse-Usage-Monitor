@@ -43,6 +43,16 @@ lines.push({ type: "assistant", timestamp: "2026-07-15T12:00:00.000Z",
 lines.push({ type: "assistant", timestamp: "2026-09-15T12:00:00.000Z",
   sessionId: "intro-s", requestId: "ri2", cwd: "/p",
   message: { id: "mi2", model: "claude-sonnet-5", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+// Opus 5 standard vs fast mode, split across months so each is asserted on its
+// own: standard bills 5/25 (=30 for 1M+1M), fast (usage.speed "fast", the
+// `/fast` toggle) bills the 10/50 premium (=60). Same fixture shape proves the
+// premium comes from the speed field, not the model row.
+lines.push({ type: "assistant", timestamp: "2026-05-15T12:00:00.000Z",
+  sessionId: "o5-s", requestId: "ro1", cwd: "/p",
+  message: { id: "mo1", model: "claude-opus-5", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+lines.push({ type: "assistant", timestamp: "2026-06-15T12:00:00.000Z",
+  sessionId: "o5-s", requestId: "ro2", cwd: "/p",
+  message: { id: "mo2", model: "claude-opus-5", usage: { input_tokens: 1000000, output_tokens: 1000000, speed: "fast" } } });
 fs.writeFileSync(process.argv[1] + "/projects/glm/s.jsonl",
   lines.map(JSON.stringify).join("\n") + "\n");
 ' "$CL"
@@ -148,6 +158,12 @@ const jul = (mon("2026-07").byModel || {})["claude-sonnet-5"];
 const sep = (mon("2026-09").byModel || {})["claude-sonnet-5"];
 ok(jul && Math.abs(jul.cost - 12) < 0.005, "sonnet-5 July 2026 entry at intro 2/10 = 12 (got " + (jul ? jul.cost.toFixed(2) : "missing") + ")");
 ok(sep && Math.abs(sep.cost - 18) < 0.005, "sonnet-5 September 2026 entry at standard 3/15 = 18 (got " + (sep ? sep.cost.toFixed(2) : "missing") + ")");
+// Opus 5: standard 5/25, and the fast-mode premium 10/50 applied off
+// usage.speed — the same 1M+1M entry must cost exactly double when fast.
+const o5std = (mon("2026-05").byModel || {})["claude-opus-5"];
+const o5fast = (mon("2026-06").byModel || {})["claude-opus-5"];
+ok(o5std && Math.abs(o5std.cost - 30) < 0.005, "opus-5 standard at 5/25 = 30 (got " + (o5std ? o5std.cost.toFixed(2) : "missing") + ")");
+ok(o5fast && Math.abs(o5fast.cost - 60) < 0.005, "opus-5 fast mode at 10/50 = 60 (got " + (o5fast ? o5fast.cost.toFixed(2) : "missing") + ")");
 // The ONLY unknown-model warnings allowed are the two deliberate guard cases
 // — the guard must be VISIBLE (warn), every listed model must price silently.
 const unk = log.split("\n").filter((l) => /unknown model/.test(l));

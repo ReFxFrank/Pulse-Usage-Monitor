@@ -1,5 +1,65 @@
 # Changelog
 
+## v1.25.0
+
+- **Claude Opus 5 support** (released 2026-07-21). `claude-opus-5` prices at
+  its list rate of **$5 / $25** per MTok. Without the row it fell through to
+  `__default__` ($3/$15), so Opus 5 sessions were under-costed by 40% and
+  logged an unknown-model warning on every start.
+- **Fast mode is now priced.** Pulse has always *recorded* `usage.speed`
+  (Claude Code's `/fast`) but billed everything at standard rates — so a fast
+  Opus session read half its true cost. Fast requests on **Opus 5 and Opus
+  4.8** now price at the published **$10 / $50** premium, with cache
+  multipliers stacking on top of the fast rate as Anthropic documents. Opus
+  4.7 rejects the flag and Opus 4.6 runs standard, so neither gets a fast
+  row; `priceFor` takes the entry's own speed, so historical standard-speed
+  entries are unaffected.
+
+- **Pulse Strip — the taskbar experience is now built in.** A new optional
+  Windows companion, `pulse-strip.exe` (4th release asset): the taskbar
+  strip + popover from
+  [openusage-windows](https://github.com/CheesyPoofs346/openusage-windows)
+  (MIT, © 2026 Robin Ebers — thank you!), ported into this repo (`strip/`,
+  C#/WinForms + WebView2) and fed entirely by **your local Pulse server**
+  instead of the upstream Swift engine. What that buys:
+  - **One source of truth.** Meters, pricing, budget and per-source spend
+    come from `/api/summary` — the same numbers as the dashboard, including
+    Gemini CLI / Cline / Roo / Continue, which the upstream engine doesn't
+    fold in. No second credential reader, no separate pricing tables, no
+    engine crashes.
+  - **Synced values.** Opening the popover triggers a foreground fetch, so
+    the meters match Claude Code's `/usage` panel within Pulse's cache;
+    the strip's passive numbers refresh every 5 minutes without hammering
+    Anthropic's shared usage endpoint.
+  - **Pulse's look.** The popover is restyled with the dashboard's design
+    tokens (dark panel/cards, purple accent, Pulse's meter green→amber→red,
+    the dashboard's per-source donut palette). Dark-only. The pace ticks and
+    "~N% left at reset" projections are gone.
+  - **High-DPI correct from day one** — the upstream DPI bugs (bitmap
+    Graphics inherit screen DPI while pixel constants don't; fixed-width
+    popover window vs scaled WebView2 content) are fixed in the port.
+  - **Single file.** The popover UI ships embedded in the exe (extracted to
+    `~/.pulse/strip-web`); drop `pulse-strip.exe` next to `pulse.exe` (or
+    `~/.pulse/bin/`) and flip **Pulse Strip** on in the Server panel.
+    Config: `"strip": true` + optional `"stripPath"`; POST
+    `/api/strip/enable|disable`; the statusline feed carries `stripEnabled`
+    so a disabled strip exits itself. Stale-while-revalidate everywhere: a
+    failed fetch never blanks the strip or the popover.
+  - **Hardening from the adversarial review** (6 confirmed findings, all
+    fixed): strip money is parsed with the invariant culture (a
+    culture-sensitive parse read `$2,263.58` as **226358** on comma-decimal
+    locales like de-DE/pt-BR, and failed outright on fr-FR); carried-forward
+    meters are dropped once their reset time has passed (an expired window was
+    otherwise chained through every refresh and across restarts, showing a dead
+    percentage as "Resets in 1m" forever); the persisted payload is
+    re-serialized through the JSON parser before it can reach a script string;
+    the embedded UI re-extracts from a clean slate and survives one unwritable
+    file; and `--shots` writes under `~/.pulse` like everything else.
+  - **Note on windows:** the strip's per-provider *Last 7 Days* is the last 7
+    calendar days (so it agrees with its own donut and rows), while the
+    dashboard's *Past 7 days* tile is a rolling 168 hours. They can differ by
+    up to a partial day; everything else matches the dashboard exactly.
+
 ## v1.24.0
 
 - **The taskbar strip is retired — Pulse now launches the real OpenUsage

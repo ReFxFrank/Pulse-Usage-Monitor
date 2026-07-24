@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Pulse Strip: the taskbar strip + popover, ported from
+       CheesyPoofs346/openusage-windows (MIT, (c) 2026 Robin Ebers) and fed by
+       Pulse's local /api/summary instead of the upstream Swift engine.
+       Build-time component only — server.js stays zero-dependency. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>pulse-strip</AssemblyName>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The popover UI ships INSIDE the single-file exe (extracted to
+         ~/.pulse/strip-web at startup) so the release asset is one file.
+         A web/ folder next to the exe still wins for development. -->
+    <EmbeddedResource Include="web\**\*">
+      <LogicalName>web/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

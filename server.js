@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.24.0';
+const PULSE_VERSION = '1.25.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -129,6 +129,7 @@ function writeConfig(patch) {
   summaryMemo = { at: 0, payload: null };
   statuslineMemo = { at: 0, data: null };
   openusageMemo = { at: 0, key: null, path: null };
+  stripMemo = { at: 0, key: null, path: null };
   return next;
 }
 
@@ -176,9 +177,16 @@ function once(fn) {
 const PRICING = {
   // model string : { input, output }  in $/MTok
   //
-  // Current generation
+  // Current generation.
+  // fastInput/fastOutput = the fast-mode premium (Claude Code's `/fast`, API
+  // `speed: "fast"`), applied per-entry when the transcript records
+  // usage.speed === 'fast'. Only Opus 5 and Opus 4.8 have fast mode: 4.7
+  // rejects the flag and 4.6 runs standard and bills standard, so neither
+  // carries a fast row. Cache multipliers stack on top of the fast rate,
+  // which falls out of pricing cache tokens off price.input (per the docs).
   'claude-fable-5':    { input: 10, output: 50 },
-  'claude-opus-4-8':   { input: 5,  output: 25 },
+  'claude-opus-5':     { input: 5,  output: 25, fastInput: 10, fastOutput: 50 },
+  'claude-opus-4-8':   { input: 5,  output: 25, fastInput: 10, fastOutput: 50 },
   'claude-opus-4-7':   { input: 5,  output: 25 },
   'claude-opus-4-6':   { input: 5,  output: 25 },
   'claude-opus-4-5':   { input: 5,  output: 25 },
@@ -267,7 +275,7 @@ function localDateStr(ts) {
 
 // Resolve the {input, output} price for a model at a given entry timestamp,
 // honouring any time-limited introductory price.
-function priceFor(model, ts) {
+function priceFor(model, ts, speed) {
   let p = PRICING[model];
   if (!p && model) {
     // Dated / suffixed variants (e.g. claude-haiku-4-5-20251001) price as their
@@ -281,6 +289,11 @@ function priceFor(model, ts) {
   if (!p) {
     logUnknownModel(model);
     p = PRICING.__default__;
+  }
+  // Fast mode is a per-request premium, so it wins over the (model-level)
+  // introductory price — no current model carries both.
+  if (speed === 'fast' && p.fastInput != null) {
+    return { input: p.fastInput, output: p.fastOutput };
   }
   if (p.introUntil && localDateStr(ts) <= p.introUntil) {
     return { input: p.introInput, output: p.introOutput };
@@ -310,7 +323,7 @@ function costForEntry(e) {
       (e.cacheRead    / 1e6) * cachedPrice
     );
   }
-  const price = priceFor(e.model, e.ts);
+  const price = priceFor(e.model, e.ts, e.speed);
   return (
     (e.inputTokens  / 1e6) * price.input +
     (e.outputTokens / 1e6) * price.output +
@@ -2333,6 +2346,7 @@ function buildSummary(sourceFilter, opts) {
   // feature exists.
   payload.tray = { supported: process.platform === 'win32', enabled: trayDesired !== null ? trayDesired : readConfig().tray === true };
   payload.openusage = { supported: process.platform === 'win32', enabled: readConfig().openusage === true, path: findOpenUsage() };
+  payload.strip = { supported: process.platform === 'win32', enabled: readConfig().strip === true, path: findPulseStrip() };
   // Server-panel visibility into the process footprint (RSS + JS heap).
   try {
     const mu = process.memoryUsage();
@@ -3697,8 +3711,9 @@ function statuslineData() {
     // trayEnabled:false here and exits itself. trayDesired covers a
     // flag-started tray with no config key.
     trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true,
+    stripEnabled: readConfig().strip === true,
     version: PULSE_VERSION,
-  } : { today: null, trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true, version: PULSE_VERSION };
+  } : { today: null, trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true, stripEnabled: readConfig().strip === true, version: PULSE_VERSION };
   statuslineMemo = { at: now, data: d };
   return d;
 }
@@ -4182,6 +4197,59 @@ function launchOpenUsage() {
     }
   });
 }
+// ---- PULSE STRIP (opt-in, Windows) ---------------------------------------
+// Pulse's own taskbar strip + popover: pulse-strip.exe, a compiled companion
+// (strip/ in the repo — ported from openusage-windows under MIT, fed by this
+// server's /api/summary). Same launch discipline as the OpenUsage companion:
+// Pulse only STARTS it (dedupe via tasklist); disable stops future launches
+// and the strip exits itself when the statusline feed says stripEnabled off.
+let stripMemo = { at: 0, key: null, path: null };
+function findPulseStrip() {
+  const c = readConfig();
+  const key = typeof c.stripPath === 'string' ? c.stripPath : '';
+  const now = Date.now();
+  if (stripMemo.key === key && now - stripMemo.at < 30000) return stripMemo.path;
+  const isFile = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+  let resolved = null;
+  if (key) {
+    resolved = isFile(key) ? key : null; // explicit-but-missing must NOT fall back
+  } else {
+    const candidates = [
+      path.join(path.dirname(process.execPath), 'pulse-strip.exe'), // beside the packaged exe
+      path.join(pulseHome(), 'bin', 'pulse-strip.exe'),
+      path.join(__dirname, 'strip', 'dist-strip', 'pulse-strip.exe'), // dev builds
+    ];
+    for (const p of candidates) {
+      if (isFile(p)) { resolved = p; break; }
+    }
+  }
+  stripMemo = { at: now, key, path: resolved };
+  return resolved;
+}
+function launchPulseStrip() {
+  if (process.platform !== 'win32') return;
+  if (process.env.PULSE_NO_STRIP_SPAWN) {
+    console.log('[pulse] strip spawn suppressed (PULSE_NO_STRIP_SPAWN — test hook)');
+    return;
+  }
+  const exe = findPulseStrip();
+  if (!exe) {
+    console.warn('[pulse] strip: pulse-strip.exe not found — download it from the Pulse release next to your server binary, or set "stripPath" in ~/.pulse/config.json');
+    return;
+  }
+  openusageRunning(exe, (running) => { // same tasklist IMAGENAME dedupe
+    if (running) return;
+    try {
+      const child = require('child_process').spawn(exe, [],
+        { detached: true, stdio: 'ignore', cwd: path.dirname(exe) });
+      child.on('error', (e) => console.warn('[pulse] strip failed to start: ' + e.message));
+      child.unref();
+      console.log('[pulse] strip started (' + exe + ')');
+    } catch (e) {
+      console.warn('[pulse] strip failed to start: ' + e.message);
+    }
+  });
+}
 
 function startServer(port, host, opts) {
   const boundLoopback = LOOPBACK_HOSTS.has(host);
@@ -4377,6 +4445,20 @@ function startServer(port, host, opts) {
         res.end(JSON.stringify({ ok: true, tray: { supported: process.platform === 'win32', enabled: on } }));
         return;
       }
+      if (route === '/api/strip/enable' || route === '/api/strip/disable') {
+        if (!allowMutation(req, res)) return;
+        const on = route.endsWith('enable');
+        // Like openusage: NO path parameter — a spawn path must come from the
+        // user-gated config file, never from a loopback-reachable route.
+        writeConfig({ strip: on });
+        console.log('[pulse] strip ' + (on ? 'enabled' : 'disabled') + ' from the dashboard');
+        // Enable launches now; disable is picked up by the strip's own
+        // statusline poll (stripEnabled:false -> it exits itself).
+        if (on && process.platform === 'win32' && boundLoopback) launchPulseStrip();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, strip: { supported: process.platform === 'win32', enabled: on, path: findPulseStrip() } }));
+        return;
+      }
       if (route === '/api/openusage/enable' || route === '/api/openusage/disable') {
         if (!allowMutation(req, res)) return;
         const on = route.endsWith('enable');
@@ -4478,6 +4560,8 @@ function startServer(port, host, opts) {
     if (opts && opts.tray && LOOPBACK_HOSTS.has(host)) startTray(port);
     // OpenUsage companion (opt-in) — start the taskbar app alongside Pulse.
     if (readConfig().openusage === true && LOOPBACK_HOSTS.has(host)) launchOpenUsage();
+    // Pulse Strip (opt-in) — Pulse's own taskbar strip companion.
+    if (readConfig().strip === true && LOOPBACK_HOSTS.has(host)) launchPulseStrip();
     if (LOOPBACK_HOSTS.has(host)) {
       console.log(`  open: http://localhost:${port}\n`);
     } else {

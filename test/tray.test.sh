@@ -36,7 +36,7 @@ if command -v cygpath >/dev/null 2>&1; then FAKEEXE_NATIVE=$(cygpath -w "$FAKEEX
 node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ openusagePath: process.argv[2] }))' "$PH/config.json" "$FAKEEXE_NATIVE"
 
 PORT=4887
-PULSE_HOME=$PH CLAUDE_DIR=$CL CODEX_DIR=$TMP/nc PULSE_SUMMARY_MEMO_MS=0 PULSE_NO_TRAY_SPAWN=1 PULSE_NO_OPENUSAGE_SPAWN=1 \
+PULSE_HOME=$PH CLAUDE_DIR=$CL CODEX_DIR=$TMP/nc PULSE_SUMMARY_MEMO_MS=0 PULSE_NO_TRAY_SPAWN=1 PULSE_NO_OPENUSAGE_SPAWN=1 PULSE_NO_STRIP_SPAWN=1 \
 node "$ROOT/server.js" --port $PORT --no-update-check >"$TMP/srv.log" 2>&1 &
 SRV=$!
 sleep 2.2
@@ -47,6 +47,10 @@ curl -s -X POST -H 'X-Pulse: 1' "http://127.0.0.1:$PORT/api/tray/enable" > "$TMP
 curl -s "http://127.0.0.1:$PORT/api/summary" > "$TMP/on.json"
 curl -s "http://127.0.0.1:$PORT/api/statusline" > "$TMP/sl-on.json"
 curl -s -X POST -H 'X-Pulse: 1' "http://127.0.0.1:$PORT/api/tray/disable" > "$TMP/dis.json"
+GETST=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/api/strip/enable")
+curl -s -X POST -H 'X-Pulse: 1' "http://127.0.0.1:$PORT/api/strip/enable" > "$TMP/st-en.json"
+curl -s "http://127.0.0.1:$PORT/api/statusline" > "$TMP/sl-strip.json"
+curl -s -X POST -H 'X-Pulse: 1' "http://127.0.0.1:$PORT/api/strip/disable" > "$TMP/st-dis.json"
 GETOU=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/api/openusage/enable")
 curl -s -X POST -H 'X-Pulse: 1' "http://127.0.0.1:$PORT/api/openusage/enable" > "$TMP/ou-en.json"
 curl -s "http://127.0.0.1:$PORT/api/summary" > "$TMP/ou-on.json"
@@ -73,6 +77,13 @@ ok(J("en.json").ok === true && J("en.json").tray.enabled === true, "POST enable 
 ok(J("on.json").tray.enabled === true, "summary reflects enabled");
 ok(J("sl-on.json").trayEnabled === true, "statusline carries trayEnabled:true while on");
 ok(J("dis.json").tray.enabled === false, "POST disable -> disabled");
+ok(before.strip && before.strip.enabled === false && typeof before.strip.supported === "boolean",
+   "payload.strip present, disabled by default");
+ok(process.argv[5] === "403" || process.argv[5] === "404" || process.argv[5] === "405",
+   "GET on the strip endpoint is refused (got " + process.argv[5] + ")");
+ok(J("st-en.json").ok === true && J("st-en.json").strip.enabled === true, "POST strip/enable -> enabled");
+ok(J("sl-strip.json").stripEnabled === true, "statusline carries stripEnabled:true while on");
+ok(J("st-dis.json").strip.enabled === false, "POST strip/disable -> disabled");
 ok(J("ou-en.json").ok === true && J("ou-en.json").openusage.enabled === true,
    "POST openusage/enable -> enabled");
 ok(J("ou-en.json").openusage.path && J("ou-en.json").openusage.path.indexOf("OpenUsageTray") >= 0,
@@ -85,7 +96,7 @@ ok(cfg.openusage === false && typeof cfg.openusagePath === "string",
    "config ends openusage-disabled with openusagePath retained");
 ok(J("sl-off.json").trayEnabled === false, "statusline flips to trayEnabled:false (tray self-exit signal)");
 process.exit(fail);
-' "$TMP" "$GETCODE" "$PH" "$GETOU"
+' "$TMP" "$GETCODE" "$PH" "$GETOU" "$GETST"
 RES=$?
 echo "---- exit $RES"
 exit $RES

@@ -8,3 +8,11 @@ npm-debug.log*
 dist-exe/
 build/sea-prep.blob
 build/sea-config.json
+
+# Pulse Strip (strip/) — C# build outputs. Only the SOURCE is committed; the
+# exe is built by CI and shipped as a release asset (dist-strip/pulse-strip.exe
+# alone is ~105 MB, so this must never reach git history).
+strip/bin/
+strip/obj/
+strip/dist-strip/
+strip/shots/

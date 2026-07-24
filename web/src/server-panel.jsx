@@ -85,6 +85,20 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
     setBusy(null);
   }
 
+  // Pulse's own taskbar strip (pulse-strip.exe, ships with the release).
+  async function onToggleStrip() {
+    setBusy('strip');
+    try {
+      const on = !(data.strip && data.strip.enabled);
+      const r = await postJson('/api/strip/' + (on ? 'enable' : 'disable'));
+      const found = r && r.strip && r.strip.path;
+      setNote(!on ? 'Strip disabled — it exits within a minute.'
+        : found ? 'Pulse Strip starting on your taskbar — drag it anywhere, click it for the popover.'
+        : 'Enabled, but pulse-strip.exe was not found. Download it from the Pulse release and put it next to your server binary (or set "stripPath" in ~/.pulse/config.json).');
+    } catch (e) { setNote('Strip toggle failed: ' + e.message); }
+    setBusy(null);
+  }
+
   // Launches CheesyPoofs346/openusage-windows (the taskbar strip + popover
   // app) alongside Pulse on startup. Pulse only starts it — never installs,
   // updates, or kills it.
@@ -225,6 +239,16 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
             title="Notification-area icon with a live 5h-% badge; click it for the mini panel."
           >
             {busy === 'tray' ? 'Saving…' : ('Tray icon: ' + (data.tray.enabled ? 'on' : 'off'))}
+          </button>
+        )}
+        {data.strip && data.strip.supported && (
+          <button
+            className="btn ghost"
+            onClick={onToggleStrip}
+            disabled={busy === 'strip'}
+            title="Pulse's own taskbar strip: provider % left + spend on the taskbar, click for a popover with meters, spend and trends. Ported from openusage-windows (MIT), fed by this server."
+          >
+            {busy === 'strip' ? 'Saving…' : ('Pulse Strip: ' + (data.strip.enabled ? 'on' : 'off'))}
           </button>
         )}
         {data.openusage && data.openusage.supported && (

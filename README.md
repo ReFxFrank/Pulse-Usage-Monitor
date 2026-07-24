@@ -74,13 +74,22 @@ logs already on your machine.
   click-to-open mini overview. Zero dependencies — hand-rolled PowerShell
   fed by the local statusline endpoint. Tip: Windows hides new tray icons
   behind the `^` chevron — drag Pulse out once to pin it.
-- 🚀 **OpenUsage companion** (opt-in, Windows) — prefer a taskbar strip?
-  Pulse can launch the excellent
+- 📊 **Pulse Strip** (opt-in, Windows) — your usage right on the taskbar:
+  a slim transparent strip with each provider's **% left** (rotating with
+  today's spend), and a click-to-open **popover** with meter bars, reset
+  countdowns, a per-source Total Spend donut, spend rows and daily trends —
+  all in the dashboard's dark look, fed by your local Pulse server (values
+  match the dashboard, agents included). Grab `pulse-strip.exe` from the
+  release, drop it next to `pulse.exe`, and flip **Pulse Strip** on in the
+  Server panel. Ported from
+  [openusage-windows](https://github.com/CheesyPoofs346/openusage-windows)
+  (MIT) — credit where due; their strip design is excellent.
+- 🚀 **OpenUsage companion** (opt-in, Windows) — prefer running the real
   [OpenUsage for Windows](https://github.com/CheesyPoofs346/openusage-windows)
-  (taskbar strip + popover) together with the server: flip the Server-panel
-  toggle or set `{"openusage": true}` (plus `"openusagePath"` if you
-  unzipped it somewhere unusual). Pulse only *starts* the app when it isn't
-  already running — install/update it from its own releases page.
+  instead? Pulse can launch it together with the server: flip the
+  Server-panel toggle or set `{"openusage": true}` (plus `"openusagePath"`
+  if you unzipped it somewhere unusual). Pulse only *starts* the app when it
+  isn't already running — install/update it from its own releases page.
 - 📈 **Period-over-period comparison** — the spend header shows the delta vs the
   previous equal window (e.g. *▲ 18% vs prev 30 days*), so trends are obvious.
 - 🕒 **"When you work" heatmap** — a 7×24 day-by-hour grid shaded by spend, so

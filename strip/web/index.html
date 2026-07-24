@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<!--
+  Pulse Strip popover UI.
+  Adapted from openusage-windows (https://github.com/rebers/openusage) tray/web/index.html,
+  MIT License, Copyright (c) 2026 Robin Ebers. See strip/LICENSE-openusage.
+  Restyled for Pulse (dark-only theme); OpenUsage name/logo removed per its trademark policy.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pulse</title>
+<style>
+/* ---- Pulse design tokens (dark-only; mirrors web/src/styles.css) ---- */
+:root{
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+
+  --tray:#141318;                 /* popover panel */
+  --card:#1e1d26;                 /* cards */
+  --track:#2a2938;                /* meter track */
+  --segbg:#171620;                /* segmented control trough */
+  --hair:rgba(255,255,255,.08);
+
+  --text:#f4f3fa;
+  --text2:#b9b6cc;
+  --text3:#78748f;
+
+  --accent:#9b8cff;
+  --good:#22b892;                 /* meter fill, used < 60% */
+  --warn:#e0a132;                 /* meter fill, used >= 60% */
+  --bad:#f27878;                  /* meter fill, used >= 85% */
+  --seg-on-bg:#38354a;
+  --seg-on-shadow:0 1px 2px rgba(0,0,0,.4);
+
+  /* density */
+  --pad-h:14px;                   /* row horizontal padding */
+  --bar-h:5px;                    /* meterHeight */
+  --row-gap:4px;                  /* rowInnerSpacing */
+  --bar-row-pad:8px;              /* barRowPadding */
+  --text-row-pad:5px;             /* textRowPadding */
+  --section-gap:11px;             /* sectionSpacing */
+  --header-gap:4px;               /* headerToCardSpacing */
+  --card-gutter:4px;              /* cardGutter */
+  --radius:12px;                  /* cardCornerRadius (popover window radius 20px is host-side) */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--tray);color:var(--text);font-family:var(--font);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;font-size:13px;line-height:1.25;
+  user-select:none;-webkit-user-select:none;overflow-x:hidden;scrollbar-width:none;-ms-overflow-style:none}
+/* Hide the scrollbar entirely — the popover sizes to its content, so the bar only ever flickered in
+   during resize. Scrolling by wheel/trackpad still works if content ever exceeds the max height. */
+::-webkit-scrollbar{width:0;height:0;display:none}
+#app{padding:12px var(--pad-h) 10px}
+
+/* ---------- Total Spend card ---------- */
+.spend{background:var(--card);border-radius:var(--radius);padding:12px 14px 14px;margin-bottom:var(--section-gap)}
+.spend-head{display:flex;align-items:center;gap:5px;margin-bottom:12px}
+.spend-title{font-size:15px;font-weight:600}
+.info{width:14px;height:14px;border-radius:50%;color:var(--text2);flex:0 0 auto}
+.spend-head .spacer{flex:1}
+.iconbtn{width:22px;height:22px;color:var(--text2);cursor:default;display:flex;align-items:center;justify-content:center}
+
+.seg{position:relative;display:flex;background:var(--segbg);border-radius:9px;padding:2px;margin-bottom:14px;
+  touch-action:none;user-select:none;-webkit-user-select:none}
+.seg-thumb{position:absolute;top:2px;left:0;bottom:2px;width:33%;border-radius:7px;background:var(--seg-on-bg);
+  box-shadow:var(--seg-on-shadow);z-index:0;will-change:transform;
+  transition:transform .34s cubic-bezier(.34,1.28,.64,1), width .18s ease}
+.seg-thumb.drag{transition:none}
+.seg button{position:relative;z-index:1;flex:1;border:0;background:transparent;font-family:inherit;font-size:12px;
+  font-weight:600;color:var(--text2);padding:5px 0;border-radius:7px;cursor:default;transition:color .22s ease}
+.seg button.on{color:var(--text)}
+/* No focus ring — this is an app popover, not a form; the thumb already shows the selection. */
+.seg button:focus, .seg button:focus-visible{outline:none}
+
+.donut-wrap{display:flex;align-items:center;gap:16px}
+.donut{position:relative;width:132px;height:132px;flex:0 0 auto}
+.donut svg{transform:rotate(-90deg)}
+.donut svg circle{transition:stroke-dasharray .55s cubic-bezier(.22,1,.36,1),stroke-dashoffset .55s cubic-bezier(.22,1,.36,1),stroke .3s}
+.donut-wrap.anim{animation:pop .32s ease}
+.donut .center{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:19px;font-weight:700;letter-spacing:-.3px}
+.legend{flex:1;display:flex;flex-direction:column;gap:9px;min-width:0}
+.legend .row{display:flex;align-items:center;gap:9px;font-size:14px}
+.legend .dot{width:11px;height:11px;border-radius:50%;flex:0 0 auto}
+.legend .name{font-weight:400;color:var(--text)}
+.legend .amt{margin-left:auto;font-weight:600}
+
+/* ---------- Provider section ---------- */
+.section{margin-bottom:var(--section-gap)}
+.section:last-child{margin-bottom:0}
+.sec-head{display:flex;align-items:center;gap:5px;padding:2px 6px 2px 4px;margin-bottom:var(--header-gap)}
+.mark{width:16px;height:16px;flex:0 0 auto;background:var(--text2)}
+.sec-name{font-size:14px;font-weight:600}
+.sec-plan{font-size:11px;color:var(--text2)}
+.sec-head .spacer{flex:1}
+.sec-warn{color:var(--warn);font-size:11px}
+.mark-r{width:16px;height:16px;flex:0 0 auto;background:var(--text2);opacity:.9}
+/* Letter-badge fallback when no icon file ships for a provider — never render blank. */
+.mark-fallback{border-radius:50%;display:flex;align-items:center;justify-content:center;
+  color:#fff;font-size:10px;font-weight:700;line-height:1;opacity:1}
+
+.card{background:var(--card);border-radius:var(--radius);padding:var(--card-gutter) 0}
+
+/* meter (bounded) row */
+.mrow{padding:var(--bar-row-pad) var(--pad-h)}
+.mrow .lbl{display:flex;align-items:baseline;gap:6px;margin-bottom:var(--row-gap)}
+.mrow .title{font-size:13px;font-weight:600}
+.meter{position:relative;height:var(--bar-h);margin:var(--row-gap) 0}
+.meter .trk{position:absolute;inset:0;background:var(--track);border-radius:99px}
+.meter .fil{position:absolute;top:0;bottom:0;left:0;border-radius:99px;min-width:var(--bar-h);
+  transition:width .6s cubic-bezier(.22,1,.36,1), background .3s ease}
+.mrow .read{display:flex;align-items:baseline;gap:8px;font-size:12px;margin-top:var(--row-gap)}
+.mrow .read .head{color:var(--text);font-weight:400}
+.mrow .read .ctx{margin-left:auto;color:var(--text2);white-space:nowrap}
+
+/* text (unbounded) row */
+.trow{display:flex;align-items:center;gap:10px;padding:var(--text-row-pad) var(--pad-h)}
+.trow.tight{padding-top:2px}
+.trow .tl{font-size:12px;font-weight:600;color:var(--text)}
+.trow .tv{margin-left:auto;font-size:12px;color:var(--text);text-align:right}
+.trow .tv .sub{display:block;font-size:11px;color:var(--text2)}
+
+/* trend sparkline row */
+.chrow{padding:8px var(--pad-h)}
+.chrow .tl{font-size:12px;font-weight:600;margin-bottom:6px;display:flex}
+.chrow .tl .note{margin-left:auto;font-weight:400;color:var(--text2)}
+.spark{display:flex;align-items:flex-end;gap:2px;height:18px}
+.spark .b{flex:1;background:var(--accent);border-radius:1px;min-height:1px;opacity:.85}
+
+/* expand caret */
+.caret{display:flex;align-items:center;justify-content:center;color:var(--text2);padding:5px 0;cursor:default}
+.caret svg{width:12px;height:12px}
+
+.empty{color:var(--text2);text-align:center;padding:26px 16px;font-size:13px}
+.hidden{display:none}
+
+/* Popover open: the panel grows OUT of its bottom-right corner (toward the strip) — a real scale-up
+   "drag", not a fade-flash. CRITICAL: no `animation-fill-mode` — content is visible by default
+   (opacity:1), so a skipped animation can never blank the popover. */
+#app{transform-origin:100% 100%;opacity:1}
+body.opening #app{animation:popopen .44s cubic-bezier(.16,1,.3,1)}
+@keyframes popopen{
+  0%{opacity:0;transform:scale(.55)}
+  22%{opacity:1}
+  100%{opacity:1;transform:scale(1)}
+}
+
+/* micro-animations (enhancement only, never hold an invisible state) */
+@keyframes pop{from{opacity:.45;transform:scale(.97)}to{opacity:1;transform:none}}
+.donut .center{transition:opacity .25s ease}
+
+/* errored provider (e.g. token invalidated) */
+.errsec .sec-name{color:var(--text)}
+.errcard{background:var(--card);border-radius:var(--radius);padding:10px var(--pad-h);display:flex;gap:9px;align-items:flex-start}
+.errcard .warn{color:var(--warn);flex:0 0 auto;margin-top:1px}
+.errcard .msg{font-size:12px;color:var(--text2);line-height:1.35}
+.errcard .msg b{color:var(--text);font-weight:600}
+
+/* footer: dashboard link */
+.footer{display:flex;align-items:center;gap:6px;padding:8px var(--pad-h) 4px;margin-top:4px}
+.footer .spacer{flex:1}
+.footer .dash{border:0;background:transparent;color:var(--text2);font-family:inherit;font-size:12px;
+  font-weight:600;padding:4px 8px;border-radius:7px;cursor:default}
+.footer .dash:hover{background:var(--track);color:var(--accent)}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+"use strict";
+
+/* ---------- theme ---------- */
+// Pulse is dark-only. The host may still call window.setTheme — keep it as a harmless no-op so
+// host calls never throw. No light theme, no toggle, no persistence.
+window.setTheme = function(){};
+
+// Called by the host each time the popover is shown, to replay the spring-open.
+window.playOpen = function(){
+  const b=document.body;
+  b.classList.remove("opening"); void b.offsetWidth; // restart the animation
+  b.classList.add("opening");
+  setTimeout(()=>b.classList.remove("opening"), 360);
+};
+
+/* ---------- helpers ---------- */
+const ICONS = "icons/";
+// Icon files that actually ship in icons/ — anything else gets the letter-badge fallback,
+// so a missing icon file can never render as a blank glyph.
+const ICON_FILES = new Set(["claude","codex","gemini"]);
+const el = (t,c)=>{const e=document.createElement(t); if(c)e.className=c; return e;};
+function mark(node, providerId){ // monochrome provider glyph via CSS mask, or letter-badge fallback
+  if(ICON_FILES.has(providerId)){
+    const url = `url("${ICONS}${providerId}.svg")`;
+    node.style.webkitMaskImage = url; node.style.maskImage = url;
+    node.style.webkitMaskSize = node.style.maskSize = "contain";
+    node.style.webkitMaskRepeat = node.style.maskRepeat = "no-repeat";
+    node.style.webkitMaskPosition = node.style.maskPosition = "center";
+  } else {
+    node.classList.add("mark-fallback");
+    node.style.background = brandColor(providerId, 0);
+    node.textContent = String(providerId||"?").charAt(0).toUpperCase();
+  }
+}
+
+// Provider/source colors for glyph fallbacks and the spend donut/legend (Pulse palette).
+const BRAND = {
+  claude:"#d97757", codex:"#10a37f", gemini:"#22b892",
+  cline:"#f27878", roo:"#e77c46", continue:"#b3a5ff",
+  cli:"#4a9bf5", "claude-desktop":"#9b8cff", unknown:"#8886a0"
+};
+const SERIES = ["#9b8cff","#22b892","#e0a132","#4a9bf5","#f27878","#e77c46"];
+const brandColor = (id,i)=> BRAND[id] || SERIES[i%SERIES.length];
+
+function money(n){ // compact center label: $13.4K, $2.5K, $91.15
+  if(n>=1000){ const k=n/1000; return "$"+(k>=100?Math.round(k):k.toFixed(1)).toString().replace(/\.0$/,"")+"K"; }
+  return "$"+n.toFixed(2);
+}
+function moneyFull(n){ return "$"+n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function parseDollars(s){ if(!s)return 0; const m=String(s).replace(/,/g,"").match(/\$([\d.]+)/); return m?parseFloat(m[1]):0; }
+
+function fmtReset(iso){
+  if(!iso) return null;
+  let ms = new Date(iso).getTime() - Date.now();
+  if(isNaN(ms)) return null;
+  if(ms<0) ms=0;
+  const m = Math.floor(ms/60000), h=Math.floor(m/60), d=Math.floor(h/24);
+  if(d>0) return `Resets in ${d}d ${h-d*24}h`;
+  if(h>0) return `Resets in ${h}h`;
+  return `Resets in ${Math.max(1,m)}m`;
+}
+
+/* ---------- meter row ---------- */
+function meterRow(line){
+  const used = Number(line.used)||0;
+  const limit = Number(line.limit)||100;
+  const usedFrac = Math.max(0, Math.min(1, used/limit));
+  const remainFrac = 1 - usedFrac;                       // meter shows remaining (Left style)
+  const remainPct = Math.round(remainFrac*100);
+
+  // Severity by USED percentage (Pulse thresholds — same as the tray badge):
+  // used >= 85% -> bad, >= 60% -> warn, else good.
+  const usedPct = usedFrac*100;
+  const color = usedPct>=85 ? "var(--bad)" : usedPct>=60 ? "var(--warn)" : "var(--good)";
+
+  const row=el("div","mrow");
+  const lbl=el("div","lbl");
+  const title=el("span","title"); title.textContent=line.label; lbl.appendChild(title);
+  row.appendChild(lbl);
+
+  const meter=el("div","meter");
+  meter.appendChild(el("div","trk"));
+  const fil=el("div","fil");
+  const target = remainFrac<=0 ? "0" : `max(var(--bar-h), ${(remainFrac*100).toFixed(2)}%)`;
+  // Set the real width immediately (visible even if rAF/animation is throttled); the CSS width
+  // transition still animates on later value changes.
+  fil.style.width=target; fil.style.background=color;
+  meter.appendChild(fil);
+  row.appendChild(meter);
+
+  const read=el("div","read");
+  const head=el("span","head"); head.textContent=`${remainPct}% left`; read.appendChild(head);
+  const ctx=el("span","ctx"); const r=fmtReset(line.resetsAt); if(r)ctx.textContent=r; read.appendChild(ctx);
+  row.appendChild(read);
+  return row;
+}
+
+/* ---------- text row ---------- */
+function textRow(line, tight){
+  const row=el("div","trow"+(tight?" tight":""));
+  const l=el("span","tl"); l.textContent=line.label; row.appendChild(l);
+  const v=el("span","tv"); v.textContent=line.value||"—";
+  if(line.subtitle){ const s=el("span","sub"); s.textContent=line.subtitle; v.appendChild(s); }
+  row.appendChild(v);
+  return row;
+}
+
+/* ---------- trend row ---------- */
+function chartRow(line){
+  const row=el("div","chrow");
+  const tl=el("div","tl"); tl.textContent=line.label;
+  if(line.note){ const n=el("span","note"); n.textContent=line.note; tl.appendChild(n); }
+  row.appendChild(tl);
+  const spark=el("div","spark");
+  const pts=line.points||[]; const max=Math.max(1,...pts.map(p=>Number(p.value)||0));
+  for(const p of pts){ const b=el("div","b"); b.style.height=`${Math.max(2,(Number(p.value)||0)/max*100)}%`; spark.appendChild(b); }
+  row.appendChild(spark);
+  return row;
+}
+
+/* ---------- provider section ---------- */
+function providerSection(p){
+  const sec=el("div","section");
+  const head=el("div","sec-head");
+  const name=el("span","sec-name"); name.textContent=p.displayName||p.providerId; head.appendChild(name);
+  if(p.plan){ const pl=el("span","sec-plan"); pl.textContent=p.plan; head.appendChild(pl); }
+  if(p.__error){ const w=el("span","sec-warn"); w.textContent="⚠"; w.title=p.__error; head.appendChild(w); }
+  head.appendChild(el("div","spacer"));
+  const mr=el("div","mark-r"); mark(mr,p.providerId); head.appendChild(mr);
+  sec.appendChild(head);
+
+  const card=el("div","card");
+  const lines=p.lines||[];
+  let prevText=false;
+  for(const line of lines){
+    // Skip empty placeholder rows (e.g. the "Status —" line a rate-limited refresh emits) — the meters
+    // themselves are carried over by the host, so an em-dash row is pure noise.
+    if(line.type==="text" && (!line.value || /^[—-]\s*$/.test(String(line.value)))) continue;
+    if(line.type==="progress"){ card.appendChild(meterRow(line)); prevText=false; }
+    else if(line.type==="barChart"){ card.appendChild(chartRow(line)); prevText=false; }
+    else { card.appendChild(textRow(line, prevText)); prevText=true; }
+  }
+  sec.appendChild(card);
+  return sec;
+}
+
+/* ---------- total spend ---------- */
+let spendPeriod = "All Time";
+const PERIOD_LABEL = { "Today":"Today", "7 Days":"Last 7 Days", "30 Days":"Last 30 Days", "All Time":"All Time" };
+let LAST_PROVIDERS = [];
+
+function spendFor(providers, period){
+  const wanted = PERIOD_LABEL[period];
+  const rows=[];
+  for(let i=0;i<providers.length;i++){
+    const p=providers[i];
+    const line=(p.lines||[]).find(l=>l.type==="text"&&l.label===wanted);
+    const amt=parseDollars(line&&line.value);
+    if(amt>0) rows.push({id:p.providerId, name:p.displayName||p.providerId, amt, color:brandColor(p.providerId,i)});
+  }
+  rows.sort((a,b)=>b.amt-a.amt);
+  return rows;
+}
+
+const ALL_PERIODS=["Today","7 Days","30 Days","All Time"];
+let PERIODS=ALL_PERIODS.slice(); // active tab set — "All Time" drops out when no provider reports it
+let SPEND=null; // live refs for in-place period switching
+
+// Providers that don't track all-time spend just contribute $0 to the sum; the tab itself only
+// hides when NO provider reports an "All Time" dollar line at all.
+function availablePeriods(providers){
+  const hasAllTime = providers.some(p=>(p.lines||[]).some(l=>l.type==="text"&&l.label==="All Time"&&parseDollars(l.value)>0));
+  return hasAllTime ? ALL_PERIODS.slice() : ALL_PERIODS.slice(0,3);
+}
+
+function spendCard(providers){
+  PERIODS=availablePeriods(providers);
+  if(!PERIODS.includes(spendPeriod)) spendPeriod=PERIODS[PERIODS.length-1];
+
+  const card=el("div","spend");
+  const head=el("div","spend-head");
+  const t=el("span","spend-title"); t.textContent="Total Spend"; head.appendChild(t);
+  const info=el("span","info"); info.innerHTML='<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 7v4M8 4.6v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+  head.appendChild(info);
+  head.appendChild(el("div","spacer"));
+  card.appendChild(head);
+
+  // sliding + draggable segmented control
+  const seg=el("div","seg");
+  const thumb=el("div","seg-thumb"); seg.appendChild(thumb);
+  const buttons=PERIODS.map((per,i)=>{
+    const b=el("button", per===spendPeriod?"on":""); b.textContent=per; seg.appendChild(b); return b;
+  });
+  card.appendChild(seg);
+
+  const body=el("div"); card.appendChild(body);
+  SPEND={seg,thumb,buttons,body,providers};
+  attachSegDrag();
+  updateSpendBody(false);
+  requestAnimationFrame(()=>positionThumb(PERIODS.indexOf(spendPeriod), false));
+  // The first rAF can measure the segment before layout settles (fonts/scrollbar), which left the
+  // thumb sized and positioned for the wrong width. Re-place it whenever the segment's width changes.
+  if(window.ResizeObserver){
+    new ResizeObserver(()=>positionThumb(PERIODS.indexOf(spendPeriod), false)).observe(seg);
+  }
+  return card;
+}
+
+function positionThumb(i, animate){
+  if(!SPEND) return;
+  const pad=2, inner=SPEND.seg.clientWidth-pad*2, w=inner/PERIODS.length;
+  if(!animate) SPEND.thumb.classList.add("drag");
+  SPEND.thumb.style.width=w+"px";
+  SPEND.thumb.style.transform=`translateX(${pad+i*w}px)`;
+  if(!animate) requestAnimationFrame(()=>SPEND.thumb.classList.remove("drag"));
+}
+
+function selectPeriod(i, animate){
+  i=Math.max(0,Math.min(PERIODS.length-1,i));
+  const changed = spendPeriod!==PERIODS[i];
+  spendPeriod=PERIODS[i];
+  SPEND.buttons.forEach((b,j)=>b.classList.toggle("on",j===i));
+  positionThumb(i, animate);
+  if(changed) updateSpendBody(true);
+}
+
+function attachSegDrag(){
+  const {seg,thumb}=SPEND;
+  let dragging=false;
+  const geom=()=>{ const r=seg.getBoundingClientRect(); const pad=2, inner=r.width-pad*2, w=inner/PERIODS.length; return {r,pad,inner,w}; };
+  const place=(clientX)=>{ const {r,pad,inner,w}=geom(); let x=clientX-r.left-pad-w/2; x=Math.max(0,Math.min(inner-w,x));
+    thumb.style.width=w+"px"; thumb.style.transform=`translateX(${pad+x}px)`;
+    const i=Math.round(x/w); SPEND.buttons.forEach((b,j)=>b.classList.toggle("on",j===i)); return i; };
+  seg.addEventListener("pointerdown",e=>{ dragging=true; thumb.classList.add("drag");
+    try{seg.setPointerCapture(e.pointerId);}catch(_){}; place(e.clientX); e.preventDefault(); });
+  seg.addEventListener("pointermove",e=>{ if(dragging) place(e.clientX); });
+  const end=e=>{ if(!dragging)return; dragging=false; thumb.classList.remove("drag"); const i=place(e.clientX); selectPeriod(i,true); };
+  seg.addEventListener("pointerup",end);
+  seg.addEventListener("pointercancel",end);
+}
+
+function updateSpendBody(animate){
+  const {body,providers}=SPEND;
+  const rows=spendFor(providers, spendPeriod);
+  const total=rows.reduce((s,r)=>s+r.amt,0);
+  body.innerHTML="";
+  const wrap=el("div","donut-wrap"+(animate?" anim":""));
+  const donut=el("div","donut");
+  // Mirrors the dashboard's MiniDonut geometry (web/src/mini.jsx): a fixed
+  // hairline 1.5-unit gap between segments (a %-of-circumference gap looked
+  // chipped), 0.5 minimum so tiny sources stay visible, soft 7%-white track.
+  const R=58, C=2*Math.PI*R, sw=15;
+  let svg=`<svg viewBox="0 0 132 132" width="132" height="132">`;
+  svg+=`<circle cx="66" cy="66" r="${R}" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="${sw}"/>`;
+  let off=0; const gap = rows.length>1 ? 1.5 : 0;
+  for(const r of rows){
+    const frac= total>0 ? r.amt/total : 0;
+    const len=Math.max(0.5, frac*C - gap);
+    svg+=`<circle cx="66" cy="66" r="${R}" fill="none" stroke="${r.color}" stroke-width="${sw}" `
+       + `stroke-dasharray="${len} ${C}" stroke-dashoffset="${-off}" stroke-linecap="butt"/>`;
+    off+=frac*C;
+  }
+  svg+=`</svg>`;
+  donut.innerHTML=svg;
+  const center=el("div","center"); center.textContent=money(total); donut.appendChild(center);
+  wrap.appendChild(donut);
+
+  const legend=el("div","legend");
+  rows.forEach((r,i)=>{
+    const row=el("div","row");
+    const dot=el("span","dot"); dot.style.background=r.color; row.appendChild(dot);
+    const nm=el("span","name"); nm.textContent=r.name; row.appendChild(nm);
+    const am=el("span","amt"); am.textContent=r.amt>=1000?moneyFull(r.amt):("$"+r.amt.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})); row.appendChild(am);
+    legend.appendChild(row);
+  });
+  if(rows.length===0){ const e=el("div","name"); e.style.color="var(--text2)"; e.textContent="No spend in this period"; legend.appendChild(e); }
+  wrap.appendChild(legend);
+  body.appendChild(wrap);
+}
+
+/* ---------- render ---------- */
+function hasSpend(providers){
+  return providers.some(p=>(p.lines||[]).some(l=>l.type==="text"&&/Last 30 Days|Today|Yesterday/.test(l.label)&&parseDollars(l.value)>0));
+}
+function escapeHtml(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+let LAST_ERRORS=[];
+function rerender(){ renderApp(LAST_PROVIDERS, LAST_ERRORS); }
+
+// Errored providers worth surfacing: credentials exist but broke (re-auth needed) — not the ones the
+// user never set up ("not logged in", "no API key"). Keeps the popover clean.
+function actionableErrors(errors, providerIds){
+  return (errors||[]).filter(e => e && e.providerId && !providerIds.has(e.providerId)
+    && /revoked|expired|invalidat|conflict|re-?auth|session/i.test(e.message||""));
+}
+
+function errorSection(e){
+  const sec=el("div","section errsec");
+  const head=el("div","sec-head");
+  const name=el("span","sec-name"); name.textContent=e.displayName||e.providerId; head.appendChild(name);
+  head.appendChild(el("div","spacer"));
+  const mr=el("div","mark-r"); mark(mr,e.providerId); head.appendChild(mr);
+  sec.appendChild(head);
+  const card=el("div","errcard");
+  const w=el("span","warn"); w.innerHTML='<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor"><path d="M8 2l6 10.5H2L8 2zm0 3.4a.8.8 0 00-.8.8v2.6a.8.8 0 001.6 0V6.2a.8.8 0 00-.8-.8zm0 6.1a.9.9 0 100-1.8.9.9 0 000 1.8z"/></svg>';
+  card.appendChild(w);
+  const msg=el("span","msg"); msg.innerHTML=escapeHtml(e.message||"Needs attention");
+  card.appendChild(msg);
+  sec.appendChild(card);
+  return sec;
+}
+
+function renderApp(providers, errors){
+  LAST_PROVIDERS = providers||[];
+  LAST_ERRORS = errors||[];
+  const app=document.getElementById("app");
+  app.innerHTML="";
+  const ids=new Set((providers||[]).map(p=>p.providerId));
+  const errs=actionableErrors(errors, ids);
+  if((!providers || providers.length===0) && errs.length===0){
+    const e=el("div","empty"); e.textContent="No usage yet — Pulse is watching your local logs."; app.appendChild(e); return;
+  }
+  if(hasSpend(providers)) app.appendChild(spendCard(providers));
+  for(const p of providers) app.appendChild(providerSection(p));
+  for(const e of errs) app.appendChild(errorSection(e));
+  app.appendChild(footer());
+}
+
+function footer(){
+  const f=el("div","footer");
+  f.appendChild(el("div","spacer"));
+  const d=el("button","dash"); d.textContent="Open dashboard →"; d.title="Open the Pulse dashboard";
+  d.onclick=()=>{ try{ window.chrome.webview.postMessage({open:"dashboard"}); }catch(e){} };
+  f.appendChild(d);
+  return f;
+}
+
+// Entry point the host calls: renderData(<array or {providers,errors}>)
+window.renderData = function(payload){
+  try{
+    let providers = Array.isArray(payload) ? payload : (payload && payload.providers) || [];
+    const errors = (payload && payload.errors) || [];
+    const byId={}; for(const e of errors){ if(e && e.providerId) byId[e.providerId]=e.message; }
+    for(const p of providers){ if(byId[p.providerId]) p.__error=byId[p.providerId]; }
+    renderApp(providers, errors);
+  }catch(err){ document.getElementById("app").innerHTML='<div class="empty">'+String(err)+'</div>'; }
+};
+
+/* ---------- standalone preview sample (ignored when the host injects real data) ---------- */
+// Demo payload used when the page is opened directly. Numbers are illustrative.
+const SAMPLE=[{"displayName":"Claude","plan":"Pro","providerId":"claude","fetchedAt":new Date().toISOString(),"lines":[
+ {"label":"Session","type":"progress","used":32,"limit":100,"format":{"kind":"percent"},"resetsAt":new Date(Date.now()+2*3600e3).toISOString(),"periodDurationMs":18000000},
+ {"label":"Weekly","type":"progress","used":46,"limit":100,"format":{"kind":"percent"},"resetsAt":new Date(Date.now()+2.1*24*3600e3).toISOString(),"periodDurationMs":604800000},
+ {"label":"Today","type":"text","value":"$12.40 · 9.8M tokens"},
+ {"label":"Last 7 Days","type":"text","value":"$86.20 · 71.4M tokens"},
+ {"label":"Last 30 Days","type":"text","value":"$318.75 · 264.9M tokens"},
+ {"label":"All Time","type":"text","value":"$742.10 · 615.3M tokens"},
+ {"label":"Usage Trend","type":"barChart","note":"From your Claude usage history (estimated)",
+  "points":[3,5,2,8,11,6,9,14,7,4,12,16,9,6,10,13,8,5,11,15,7,9,12,6,10,14,8,11,9,13]
+    .map((v,i)=>({label:"d"+i,value:v*1e6,valueLabel:(v)+"M tokens"}))}
+]},
+{"displayName":"Codex","plan":"Plus","providerId":"codex","fetchedAt":new Date().toISOString(),"lines":[
+ {"label":"Weekly","type":"progress","used":29,"limit":100,"format":{"kind":"percent"},"resetsAt":new Date(Date.now()+3.5*24*3600e3).toISOString(),"periodDurationMs":604800000},
+ {"label":"Last 7 Days","type":"text","value":"$24.80 · 18.6M tokens"},
+ {"label":"Last 30 Days","type":"text","value":"$96.40 · 74.2M tokens"},
+ {"label":"All Time","type":"text","value":"$210.55 · 168.9M tokens"}
+]},
+{"displayName":"Gemini CLI","providerId":"gemini","fetchedAt":new Date().toISOString(),"lines":[
+ {"label":"Last 7 Days","type":"text","value":"$18.30 · 12.1M tokens"},
+ {"label":"Last 30 Days","type":"text","value":"$62.15 · 48.7M tokens"},
+ {"label":"All Time","type":"text","value":"$128.90 · 101.4M tokens"}
+]},
+{"displayName":"Roo Code","providerId":"roo","fetchedAt":new Date().toISOString(),"lines":[
+ {"label":"Last 30 Days","type":"text","value":"$9.40 · 6.2M tokens"},
+ {"label":"All Time","type":"text","value":"$21.05 · 14.9M tokens"}
+]}];
+if(!window.__NO_SAMPLE__) renderApp(SAMPLE, []);
+</script>
+</body>
+</html>
