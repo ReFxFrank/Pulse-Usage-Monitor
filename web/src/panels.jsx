@@ -313,6 +313,228 @@ export function BudgetCard({ budget }) {
   );
 }
 
+// ---- plan value ----
+// What the subscription buys: the same usage repriced at API list prices,
+// expressed as a multiple of what the plan costs. Under 1× is an ordinary
+// quiet month, not a failure, so it is worded plainly and never coloured red.
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function monthShort(key) {
+  const m = parseInt(String(key).slice(5, 7), 10);
+  return MONTHS_SHORT[m - 1] || key;
+}
+// 13.6× / 2.4× / 0.62× — enough precision to move month to month without
+// implying more accuracy than list-price estimates have.
+function multFmt(m) {
+  if (m == null) return '—';
+  return (m >= 10 ? m.toFixed(1) : m.toFixed(m < 1 ? 2 : 1)) + '×';
+}
+
+export function PlanValueCard({ plan }) {
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState(plan && plan.cost ? String(plan.cost) : '');
+  const [label, setLabel] = useState((plan && plan.label) || '');
+  const [busy, setBusy] = useState(false);
+  if (!plan) return null; // server without the planValue block — stay silent
+
+  async function save(clear) {
+    setBusy(true);
+    try {
+      const amt = clear ? 0 : parseFloat(amount);
+      await postJson('/api/plan/set?amount=' + (isFinite(amt) ? amt : 0)
+        + '&label=' + encodeURIComponent(clear ? '' : label.trim()));
+      setEditing(false); // the 10s poll brings back the recomputed planValue
+      if (clear) { setAmount(''); setLabel(''); }
+    } catch (_) { /* leave the form open on failure */ }
+    setBusy(false);
+  }
+
+  if (editing || !plan.configured) {
+    return (
+      <div className="plancard set">
+        <div className="phead"><span className="blabel">Plan value</span></div>
+        <div className="pinvite">
+          {/* Always the all-sources figure — the card is account-level and does
+              not follow the dashboard's source filter, so it must say so. */}
+          {plan.spend30 > 0 ? (
+            <>You’ve run <b>{money2(plan.spend30)}</b> of list-priced usage across <b>all tracked tools</b> in the last 30 days. Tell Pulse what your subscription costs and it shows your usage as a multiple of it.</>
+          ) : (
+            <>Tell Pulse what your subscription costs each month and it shows your usage across all tracked tools as a multiple of it.</>
+          )}
+        </div>
+        <div className="bform">
+          <span className="bcur">$</span>
+          <input
+            className="binput" type="number" min="0" step="1" inputMode="decimal"
+            placeholder="200" value={amount} autoFocus={editing}
+            onChange={(e) => setAmount(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') save(false); }}
+          />
+          <span className="bcur">/mo</span>
+          <input
+            className="binput wide" type="text" maxLength={40}
+            placeholder="plan name (optional)" value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') save(false); }}
+          />
+          <button className="btn albtn" disabled={busy || !(parseFloat(amount) > 0)} onClick={() => save(false)}>Save</button>
+          {plan.configured && <button className="btn ghost albtn" disabled={busy} onClick={() => save(true)}>Clear</button>}
+          {plan.configured && (
+            <button className="btn ghost albtn" disabled={busy} onClick={() => { setEditing(false); setAmount(String(plan.cost)); setLabel(plan.label || ''); }}>Cancel</button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const under = plan.multiplier != null && plan.multiplier < 1;
+  return (
+    <div className={'plancard' + (under ? ' under' : '')}>
+      <div className="phead">
+        <span className="blabel">
+          Plan value{plan.label ? ' · ' + plan.label : ''}&nbsp;
+          <InfoTip text="Every tool Pulse tracks — Claude Code, Codex, Gemini CLI, Continue, Cline, Roo — repriced at each provider’s API list prices and divided by what you pay for the plan. Always all sources: a source filter narrows the dashboard, not what your subscription costs. It is not a bill and not a counterfactual — your plan never covered the non-Claude tools, and sources that record only local estimates (Continue) or their own cost figures (Cline, Roo) are folded in as-is, so read this as an estimate of what your usage is worth.">
+            <span style={{ color: 'var(--text-3)', cursor: 'help' }}>ⓘ</span>
+          </InfoTip>
+        </span>
+        <button className="bedit" title="Change plan cost" onClick={() => { setEditing(true); setAmount(String(plan.cost)); setLabel(plan.label || ''); }}>edit</button>
+      </div>
+      <div className="prow">
+        <div className="phero">
+          <div className="pmult">{multFmt(plan.multiplier)}</div>
+          <div className="pcap">{under ? 'of your plan cost' : 'your plan’s cost'}</div>
+        </div>
+        <div className="pbody">
+          <div className="pline">
+            <b>{money2(plan.spend30)}</b> of list-priced usage across all sources in the last 30 days
+            {' '}vs <b>{money(plan.cost)}</b>/mo{plan.label ? ' ' + plan.label : ''}
+          </div>
+          {/* Not a pay-as-you-go counterfactual: spend30 spans every tracked
+              tool, including providers the subscription never covered and
+              sources that only record local estimates. State what it is. */}
+          <div className="psub">
+            {under
+              ? 'A quieter window — everything Pulse tracked priced under the plan’s monthly cost.'
+              : `${money2(plan.spend30 - plan.cost)} more than the plan costs, counting every tracked tool — not only the work the subscription covers.`}
+          </div>
+          <PlanMonths months={plan.months} cost={plan.cost} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Calendar-month history, oldest first, with a dashed break-even line at the
+// plan's monthly cost — the point where the multiplier crosses 1×.
+// The current month is only partly spent but is divided by a FULL month of
+// plan cost, so it must never be drawn as an under-break-even month: the
+// server flags it `partial` and it gets its own hatched treatment, "so far"
+// wording, and a pace figure instead of a verdict.
+function PlanMonths({ months, cost }) {
+  if (!months || months.length < 2) return null;
+  let max = cost > 0 ? cost : 0;
+  months.forEach((m) => { if (m.spend > max) max = m.spend; });
+  if (max <= 0) return null;
+  const breakEven = cost > 0 ? (cost / max) * 100 : null;
+  const hasPartial = months.some((m) => m.partial);
+  const tip = (m) => {
+    if (!m.partial) return `${m.key} — ${money2(m.spend)} of list-priced usage · ${multFmt(m.multiplier)} plan cost`;
+    const el = typeof m.elapsedFraction === 'number' ? m.elapsedFraction : null;
+    // Too little of the month has elapsed for a straight-line pace to mean
+    // anything, so it is simply omitted rather than shown as a wild number.
+    const pace = el != null && el >= 0.05 ? ` · on pace for ~${money2(m.spend / el)}` : '';
+    return `${m.key} — partial month, ${money2(m.spend)} of list-priced usage so far`
+      + (el != null ? ` (${Math.round(el * 100)}% elapsed)` : '')
+      + ` · ${multFmt(m.multiplier)} plan cost so far${pace}`;
+  };
+  return (
+    <div className="pmwrap">
+      <div className="pmbars">
+        {breakEven != null && <span className="pmline0" style={{ bottom: breakEven + '%' }} />}
+        {months.map((m) => (
+          <InfoTip key={m.key} text={tip(m)}>
+            <div className="pmcol">
+              <i
+                className={m.partial ? 'partial' : (m.multiplier != null && m.multiplier < 1 ? 'under' : '')}
+                style={{ height: Math.max(2, (m.spend / max) * 100) + '%' }}
+              />
+            </div>
+          </InfoTip>
+        ))}
+      </div>
+      <div className="pmlabels">
+        {months.map((m) => <span key={m.key} className={m.partial ? 'partial' : ''}>{monthShort(m.key)}</span>)}
+      </div>
+      {hasPartial && <div className="pmnote">Newest bar is the current month so far — a partial month against a full month’s plan cost.</div>}
+    </div>
+  );
+}
+
+// ---- prompt-cache economics ----
+// Leads with the NET: reading from the cache is cheap, but writing to it costs
+// a premium over plain input, and a window can genuinely come out behind. A
+// negative net is shown as a negative number, never clamped to zero.
+// Both this strip and the fast-mode one below are accumulated from the LIVE
+// logs only (per-entry token types and speed exist nowhere else — the archive
+// keeps day/model totals), while the period's headline cost merges live and
+// archived days. On a long window the live share can be a small fraction of
+// the headline sitting right above it, so say so rather than letting the
+// number read as if it covered the whole period. Under ~1% of drift is
+// rounding, not a caveat worth the noise.
+function coverageNote(period) {
+  if (!period) return null;
+  const cost = period.cost || 0;
+  const live = period.liveCost;
+  if (typeof live !== 'number' || cost <= 0 || live >= cost * 0.99) return null;
+  return `covers ${money2(live)} of this period’s ${money2(cost)} still in your logs`;
+}
+
+export function CacheSavings({ cache, period }) {
+  if (!cache || (!cache.readTokens && !cache.writePremium)) return null;
+  const neg = cache.net < 0;
+  const cov = coverageNote(period);
+  return (
+    <div className={'cachesave' + (neg ? ' neg' : '')}>
+      <span className="cstag">cache</span>
+      <b>{(neg ? '−' : '') + money2(Math.abs(cache.net))}</b>
+      <span className="cscap">net {neg ? 'cost' : 'saved'}</span>
+      <span className="cssep">·</span>
+      <span className="csdim">
+        {money2(cache.saved)} off {tokens(cache.readTokens)} cached read tokens,
+        less {money2(cache.writePremium)} paid to write the cache
+      </span>
+      {cov && <span className="cscov">{cov}</span>}
+      <InfoTip text="Cache reads bill at a fraction of the input rate; cache writes bill above it (25% extra for the 5-minute TTL, 100% for the 1-hour TTL). Net is the read saving minus that write premium, priced per entry at each model’s own rate — so it can be negative when a window writes more cache than it reuses. Cache-write surcharges are an Anthropic pricing feature: entries from other providers (OpenAI, Google) carry no write premium and contribute only their read saving. Covers the sessions still in your logs — the long-window archive keeps day/model totals, not per-entry token types.">
+        <span style={{ color: 'var(--text-3)', cursor: 'help' }}>ⓘ</span>
+      </InfoTip>
+    </div>
+  );
+}
+
+// ---- fast-mode premium ----
+// Only fast usage is interesting here; with no fast entries this is a row of
+// zeros, so the whole strip stays hidden.
+export function FastSpendNote({ speed, period }) {
+  if (!speed || !speed.fast || !speed.fast.messages) return null;
+  const std = speed.standard || { cost: 0, messages: 0 };
+  const cov = coverageNote(period); // same live-only caveat as the cache strip
+  return (
+    <div className="fastspend">
+      <span className="spdb hot">fast</span>
+      <b>{money2(speed.fastPremium)}</b>
+      <span className="cscap">above standard rates</span>
+      <span className="cssep">·</span>
+      <span className="csdim">
+        {money2(speed.fast.cost)} over {num(speed.fast.messages)} fast msgs ({tokens(speed.fast.tokens)})
+        {std.messages ? ` · ${money2(std.cost)} standard` : ''}
+      </span>
+      {cov && <span className="cscov">{cov}</span>}
+      <InfoTip text="Fast mode bills at a higher per-token rate on the models that offer it. The premium is what those same messages would have cost at that model’s standard rate, subtracted from what they actually cost. Covers the sessions still in your logs — the long-window archive keeps day/model totals, not per-entry speed.">
+        <span style={{ color: 'var(--text-3)', cursor: 'help' }}>ⓘ</span>
+      </InfoTip>
+    </div>
+  );
+}
+
 // Activity heatmap: weekday × hour, shaded by cost (messages on hover). A model
 // only appears if it's in the logs, so the grid reflects real working hours.
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];

@@ -8,6 +8,7 @@ import {
 import { SpendChart, Sparkline } from './charts.jsx';
 import {
   Card, CurrentBlock, BurnRate, Rollup, BarList, EffortSpendBars, ProjectBars, SessionsTable, PeriodSelect, Legend, InfoTip, AlertsBar, Heatmap, BudgetCard,
+  PlanValueCard, CacheSavings, FastSpendNote,
 } from './panels.jsx';
 import { ServerPanel, StopButton } from './server-panel.jsx';
 import { MetersCard } from './meters.jsx';
@@ -290,6 +291,10 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
 
       <AlertsBar alerts={alerts} notifyState={notifyState} onEnableNotify={onEnableNotify} />
 
+      {/* planValue is all-sources by design — a source filter narrows the
+          dashboard, not what the subscription costs. */}
+      <PlanValueCard plan={data.planValue} />
+
       <BudgetCard budget={data.budget} />
 
       <div className="grid stats">
@@ -324,6 +329,9 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
               {' · '}<span className="mono">{num(period.messages)}</span> msgs
               {' · '}<span className="mono">{num(period.sessions)}</span> sessions
             </div>
+            {/* period comes along so the strip can disclose how much of the
+                headline above it the live-only figures actually cover. */}
+            <CacheSavings cache={period.cacheSavings} period={period} />
             <SpendChart period={period} colorMap={colorMaps.src} />
           </Card>
 
@@ -342,6 +350,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
                 </InfoTip>
               </h2>
               <BarList rows={modelRows} modelLogos />
+              <FastSpendNote speed={period.speedSpend} period={period} />
             </Card>
             {period.singleSource ? (
               <Card delay={0.28}>

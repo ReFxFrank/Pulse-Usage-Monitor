@@ -298,16 +298,16 @@ footer .reading { margin-top: 12px; font-family: var(--mono); font-size: 11.5px;
   border-radius: 14px; padding: 13px 16px; margin-bottom: 16px;
 }
 .budgetcard .bhead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.budgetcard .blabel { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
+.budgetcard .blabel, .plancard .blabel { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
 .budgetcard .bfig { color: var(--text-3); font-size: 13px; }
 .budgetcard .bfig b { font-family: var(--mono); color: var(--text); font-size: 15px; }
 .budgetcard .bof { margin-left: 2px; }
 .budgetcard .bpct { font-family: var(--mono); margin-left: 8px; color: var(--text-2); }
-.budgetcard .bedit {
+.budgetcard .bedit, .plancard .bedit {
   appearance: none; margin-left: auto; border: 1px solid var(--stroke); background: transparent;
   color: var(--text-3); font: inherit; font-size: 11px; padding: 2px 9px; border-radius: 999px; cursor: pointer;
 }
-.budgetcard .bedit:hover { border-color: rgba(155, 140, 255, 0.5); color: var(--text-2); }
+.budgetcard .bedit:hover, .plancard .bedit:hover { border-color: rgba(155, 140, 255, 0.5); color: var(--text-2); }
 .budgetcard .btrack { height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); overflow: hidden; margin: 10px 0 8px; }
 .budgetcard .bfill { height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.2,.7,.2,1); background: var(--accent-grad); }
 .budgetcard.state-warn .bfill { background: linear-gradient(90deg, #e0a132, #f0b84a); }
@@ -315,12 +315,13 @@ footer .reading { margin-top: 12px; font-family: var(--mono); font-size: 11.5px;
 .budgetcard .bsub { font-size: 12px; color: var(--text-3); }
 .budgetcard.state-over .bover { color: #f27878; font-weight: 600; }
 .budgetcard .bsep { margin: 0 7px; opacity: 0.5; }
-.budgetcard .bform { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-.budgetcard .bcur { color: var(--text-3); font-family: var(--mono); }
-.budgetcard .binput {
+.budgetcard .bform, .plancard .bform { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.budgetcard .bcur, .plancard .bcur { color: var(--text-3); font-family: var(--mono); }
+.budgetcard .binput, .plancard .binput {
   width: 100px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--stroke);
   color: var(--text); border-radius: 8px; padding: 6px 10px; font: inherit; font-family: var(--mono);
 }
+.plancard .binput.wide { width: 170px; }
 .budgetcard .bperiod { display: flex; gap: 4px; }
 .budgetcard .bpchip {
   appearance: none; border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.03);
@@ -335,6 +336,80 @@ footer .reading { margin-top: 12px; font-family: var(--mono); font-size: 11.5px;
 .barmore:hover { color: var(--text-2); }
 .budgetcard .bpace.warn { color: var(--warn); }
 .budgetcard .bpace.bad { color: #f27878; font-weight: 600; }
+
+/* ---- plan value card ---- */
+.plancard {
+  border: 1px solid rgba(155, 140, 255, 0.26); background: rgba(155, 140, 255, 0.05);
+  border-radius: 14px; padding: 14px 16px 15px; margin-bottom: 16px;
+}
+.plancard.under, .plancard.set { border-color: var(--stroke); background: rgba(255, 255, 255, 0.02); }
+.plancard .phead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.plancard .pinvite { font-size: 13px; color: var(--text-2); margin-top: 8px; max-width: 68ch; }
+.plancard .pinvite b { font-family: var(--mono); color: var(--text); font-weight: 600; }
+.plancard .prow { display: flex; align-items: flex-start; gap: 26px; margin-top: 10px; flex-wrap: wrap; }
+.plancard .phero { flex: none; }
+.plancard .pmult {
+  font-family: var(--mono); font-size: 40px; font-weight: 600; line-height: 1;
+  letter-spacing: -0.035em; font-variant-numeric: tabular-nums;
+  background: var(--accent-grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.plancard.under .pmult { background: none; -webkit-text-fill-color: var(--text-2); color: var(--text-2); }
+.plancard .pcap { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); margin-top: 6px; }
+.plancard .pbody { flex: 1 1 260px; min-width: 0; }
+.plancard .pline { font-size: 13.5px; color: var(--text-2); }
+.plancard .pline b { font-family: var(--mono); color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.plancard .psub { font-size: 12px; color: var(--text-3); margin-top: 3px; }
+
+/* month history — bars against a dashed break-even line at the plan's cost */
+.pmwrap { margin-top: 12px; }
+.pmbars { position: relative; display: flex; align-items: flex-end; gap: 6px; height: 46px; }
+.pmcol { flex: 1; height: 100%; display: flex; align-items: flex-end; cursor: default; }
+.pmcol i { display: block; width: 100%; border-radius: 4px 4px 0 0; background: var(--accent-grad); }
+.pmcol i.under { background: rgba(255, 255, 255, 0.16); }
+/* Current month: hatched + outlined so it reads as "in progress", never as the
+   grey "under break-even" bar — its month isn't over yet. Static gradient, no
+   animation (lite-graphics safe). */
+.pmcol i.partial {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(155, 140, 255, 0.42) 0 4px,
+    rgba(155, 140, 255, 0.12) 4px 8px
+  );
+  box-shadow: inset 0 0 0 1px rgba(155, 140, 255, 0.55);
+}
+.pmline0 { position: absolute; left: 0; right: 0; border-top: 1px dashed rgba(155, 140, 255, 0.45); pointer-events: none; }
+.pmlabels { display: flex; gap: 6px; margin-top: 4px; }
+.pmlabels span { flex: 1; text-align: center; font-family: var(--mono); font-size: 9.5px; color: var(--text-3); }
+.pmlabels span.partial { color: var(--text-2); font-style: italic; }
+.pmnote { font-size: 11px; color: var(--text-3); margin-top: 5px; }
+
+/* ---- cache economics / fast-mode premium strips ---- */
+.cachesave, .fastspend {
+  display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap;
+  font-size: 12.5px; color: var(--text-2); margin: 0 0 14px;
+}
+.cachesave { margin-top: -6px; }
+.fastspend { margin: 12px 0 0; padding-top: 11px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.cachesave b, .fastspend b {
+  font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--good);
+  font-variant-numeric: tabular-nums;
+}
+.cachesave.neg b { color: var(--warn); }
+.fastspend b { color: #6fd3e7; }
+.cachesave .cstag {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-3); border: 1px solid var(--stroke); border-radius: 6px; padding: 3px 7px;
+}
+.cscap { color: var(--text-2); }
+.cssep { color: var(--text-3); opacity: 0.6; }
+.csdim { color: var(--text-3); }
+/* Coverage caveat: these strips are live-log-only while the headline above
+   merges the archive. Legible, not alarming — it qualifies the figure, it
+   doesn't warn about it. */
+.cscov {
+  color: var(--text-3); font-size: 11.5px; font-style: italic;
+  border-left: 1px solid var(--stroke); padding-left: 7px;
+}
 
 /* Export dropdown (spend header). Solid surface, no backdrop-filter — safe in
    lite-graphics mode. */

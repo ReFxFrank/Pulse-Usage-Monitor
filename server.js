@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.25.0';
+const PULSE_VERSION = '1.26.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -324,6 +324,59 @@ function costForEntry(e) {
     );
   }
   const price = priceFor(e.model, e.ts, e.speed);
+  return (
+    (e.inputTokens  / 1e6) * price.input +
+    (e.outputTokens / 1e6) * price.output +
+    (e.cacheWrite5m / 1e6) * price.input * CACHE_WRITE_5M_MULT +
+    (e.cacheWrite1h / 1e6) * price.input * CACHE_WRITE_1H_MULT +
+    (e.cacheRead    / 1e6) * price.input * CACHE_READ_MULT +
+    (e.webSearches  / 1000) * WEB_SEARCH_PER_1K
+  );
+}
+
+// What prompt caching actually bought on ONE entry, at that entry's own price
+// row (fast mode and intro prices included — never a single global rate):
+//   saved        cache reads at the FULL input price minus what they really cost
+//   writePremium the surcharge paid to CREATE cache entries (5m +0.25x input,
+//                1h +1.0x input) — the other half of the trade.
+// Netting the two is what makes "caching saved you $X" honest; a session that
+// writes more cache than it reads back is genuinely a loss, and must show as one.
+function cacheEconomicsForEntry(e) {
+  const read = e.cacheRead || 0;
+  // Entries whose cost came from the agent's OWN ledger (Cline/Roo record a real
+  // per-request `cost`, which we display verbatim) must not be re-priced here:
+  // their model id is frequently the literal 'unknown', which falls to
+  // __default__ and would invent a "saved" figure with no relationship to the
+  // cost shown beside it. No price row we trust ⇒ no savings claim.
+  if (e.costFromSource) return { read: 0, saved: 0, writePremium: 0 };
+  if (e.provider === 'openai' || e.provider === 'google') {
+    const p = e.provider === 'openai' ? priceForOpenAI(e.model) : priceForGoogle(e.model);
+    const mult = e.provider === 'openai' ? OPENAI_CACHE_READ_MULT : GOOGLE_CACHE_READ_MULT;
+    const cached = p.cachedInput != null ? p.cachedInput : p.input * mult;
+    // Neither provider bills a cache-WRITE surcharge (caching is implicit), so
+    // there is no premium to net off — only the read discount is real.
+    // read is reported only when the input price is non-zero: a free row saves
+    // nothing, and counting its reads would pad the "off N cached read tokens"
+    // denominator with tokens that contributed $0 of the savings above it.
+    return { read: p.input > 0 ? read : 0, saved: (read / 1e6) * (p.input - cached), writePremium: 0 };
+  }
+  const price = priceFor(e.model, e.ts, e.speed);
+  return {
+    // Same zero-price rule as above — covers "<synthetic>" and the free
+    // glm-*-flash rows, whose reads are real tokens but worth nothing saved.
+    read: price.input > 0 ? read : 0,
+    saved: (read / 1e6) * price.input * (1 - CACHE_READ_MULT),
+    writePremium: (e.cacheWrite5m / 1e6) * price.input * (CACHE_WRITE_5M_MULT - 1)
+                + (e.cacheWrite1h / 1e6) * price.input * (CACHE_WRITE_1H_MULT - 1),
+  };
+}
+
+// costForEntry with the fast-mode premium taken back out — the baseline the
+// "what fast mode cost you extra" figure is measured against. Claude path only:
+// fast mode is an Anthropic per-request speed tier, and no other provider's
+// entries ever carry speed === 'fast'.
+function standardCostForEntry(e) {
+  const price = priceFor(e.model, e.ts, 'standard');
   return (
     (e.inputTokens  / 1e6) * price.input +
     (e.outputTokens / 1e6) * price.output +
@@ -1185,8 +1238,12 @@ function parseClineFile(filePath, source = 'cline') {
       key: source + ':' + taskId + ':' + ts + ':' + i,
     });
     // Cline records real per-request cost — trust it; fall back to our estimate
-    // only if it's absent (very old tasks).
-    e.cost = (typeof info.cost === 'number' && isFinite(info.cost)) ? info.cost : costForEntry(e);
+    // only if it's absent (very old tasks). When we take the source's own
+    // number, flag it: anything that re-prices the entry from OUR table (cache
+    // economics) would then be talking about a different cost than the one on
+    // screen — the model here is often just 'unknown'.
+    if (typeof info.cost === 'number' && isFinite(info.cost)) { e.cost = info.cost; e.costFromSource = true; }
+    else e.cost = costForEntry(e);
     entries.push(e);
   }
   const sessionMeta = entries.length ? { [taskId]: { firstUserText: '', project: '' } } : {};
@@ -1728,7 +1785,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     const cell = day[k] || (day[k] = { source: e.source, model: e.model, cost: 0, tokens: 0, messages: 0 });
     cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
   }
-  const totals = { cost: 0, tokens: 0, messages: 0, sessions: Object.keys(sessMap).length };
+  const totals = { cost: 0, tokens: 0, messages: 0, sessions: Object.keys(sessMap).length, bySource: {} };
   const allDays = new Set(Object.keys(liveCellsByDay));
   for (const ds of Object.keys(hist.byDay)) allDays.add(ds);
   for (const ds of allDays) {
@@ -1739,6 +1796,10 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     for (const k of keys) {
       const cell = pickCell(lc[k], ac[k]);
       totals.cost += cell.cost; totals.tokens += cell.tokens; totals.messages += cell.messages;
+      // Same merged cell, split by source — so an archived-only source (its live
+      // logs long pruned) still shows an all-time row, and nothing is counted twice.
+      const bs = totals.bySource[cell.source] || (totals.bySource[cell.source] = { cost: 0, tokens: 0, messages: 0 });
+      bs.cost += cell.cost; bs.tokens += cell.tokens; bs.messages += cell.messages;
     }
   }
 
@@ -1780,6 +1841,10 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     week,
     periods,
     budget: computeBudget(periods, week, now),
+    // Account-level by definition (the subscription covers everything), so a
+    // source-filtered build overwrites this with the unfiltered figure — see
+    // buildSummary.
+    planValue: computePlanValue(periods, now),
     allSources,
     allModels,
     // Union live-flagged estimate sources with the known set, over allSources —
@@ -1816,6 +1881,15 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
   // not per-entry effort or project), so these cover the sessions still in your
   // logs. Effort bucket = ultracode | <level> | default (no explicit level).
   const effortSpend = {}, byProject = {};
+  // Cache economics and fast-mode spend are per-ENTRY facts (token type, speed,
+  // the model's price row at that timestamp) — the archive keeps none of that,
+  // so both are LIVE-only, exactly like effortSpend/byProject above.
+  const cacheSavings = { readTokens: 0, saved: 0, writePremium: 0, net: 0 };
+  const speedSpend = {
+    fast: { cost: 0, tokens: 0, messages: 0 },
+    standard: { cost: 0, tokens: 0, messages: 0 },
+    fastPremium: 0,
+  };
 
   // Pass 1: fold live entries into per-(day,source,model) cells, and accumulate
   // the decorative chips (speed/tier/effort/ultracode) + distinct sessions from
@@ -1828,6 +1902,21 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
     const cell = day[k] || (day[k] = { source: e.source, model: e.model, cost: 0, tokens: 0, messages: 0 });
     cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
     if (e.sessionId) sess.add(e.sessionId);
+    const ce = cacheEconomicsForEntry(e);
+    cacheSavings.readTokens += ce.read;
+    cacheSavings.saved += ce.saved;
+    cacheSavings.writePremium += ce.writePremium;
+    const sb = e.speed === 'fast' ? speedSpend.fast : speedSpend.standard;
+    sb.cost += e.cost; sb.tokens += tokensOf(e); sb.messages++;
+    // Only fast entries carry a premium, and only the Claude path can be fast —
+    // an entry whose model has no fast row prices identically either way, so it
+    // contributes 0 rather than being special-cased. The provider test keeps
+    // that invariant LOCAL: standardCostForEntry always prices via the Claude
+    // table, so a future non-Anthropic parser emitting speed:'fast' would
+    // otherwise silently produce a premium computed at the wrong list prices.
+    if (e.provider === 'anthropic' && e.speed === 'fast') {
+      speedSpend.fastPremium += e.cost - standardCostForEntry(e);
+    }
     // Hidden placeholders (e.g. "<synthetic>") still count toward the daily/day
     // totals (they are $0 / 0-token) but never get a by-model row or chips.
     if (!HIDDEN_MODELS.has(e.model)) {
@@ -1891,13 +1980,39 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
   // includes archived days, which don't retain effort/project) — lets the UI
   // say what fraction the breakdowns account for.
   const liveCost = Object.values(effortSpend).reduce((a, b) => a + b.cost, 0);
+  // Deliberately NOT clamped at 0: caching can be a net loss (lots of writes,
+  // few reads), and that is exactly the case worth surfacing.
+  cacheSavings.net = cacheSavings.saved - cacheSavings.writePremium;
   // sessions is live-only: archived per-day session counts can't be de-duplicated
   // across days or split by source, so they are not summed here.
   return {
     key, label, cost, tokens, messages, sessions: sess.size,
     daily, byModel, bySource, sources, singleSource: sources.length <= 1,
-    effortSpend, byProject: byProjectOut, liveCost,
+    effortSpend, byProject: byProjectOut, liveCost, cacheSavings, speedSpend,
   };
+}
+
+// The periods planValue reads, rebuilt from the UNFILTERED entries + archive.
+// Only used when the dashboard's source filter is active: what a subscription
+// buys you is an account-level figure and must not shrink when a source is
+// hidden. Builds just those windows instead of re-running the whole aggregation.
+function planPeriods(entries, history, now) {
+  const hist = history && history.byDay ? history : EMPTY_HISTORY;
+  const monthKeys = new Set();
+  for (const e of entries) monthKeys.add(localDateStr(e.ts).slice(0, 7));
+  for (const ds of Object.keys(hist.byDay)) monthKeys.add(ds.slice(0, 7));
+  // allSources only pre-seeds the daily bySource buckets, which planValue never
+  // reads — an empty list keeps this build cheap.
+  const d30 = localDayStartsBack(now, 30);
+  const s30 = new Set(d30);
+  const out = [buildPeriod('last30', 'Last 30 days',
+    entries.filter((e) => s30.has(localDateStr(e.ts))), d30, [], hist, null)];
+  for (const mk of Array.from(monthKeys).sort().slice(-PLAN_MONTHS)) {
+    const [y, m] = mk.split('-').map(Number);
+    out.push(buildPeriod(mk, mk,
+      entries.filter((e) => localDateStr(e.ts).slice(0, 7) === mk), monthDayList(y, m - 1), [], hist, null));
+  }
+  return out;
 }
 
 // Ordered list of the last n local calendar dates ending today (oldest first),
@@ -2299,6 +2414,10 @@ function buildSummary(sourceFilter, opts) {
     }
     payload.allSources = Array.from(srcSet).sort();
     payload.allModels = Array.from(modelSet).sort();
+    // Plan value answers "is the subscription worth it" — an account-level
+    // question. Recompute it from the unfiltered entries so hiding a source
+    // can't make the plan look worse than it is.
+    payload.planValue = computePlanValue(planPeriods(entries, history, now), now);
   }
   payload.sourceFilter = appliedFilter;
   // Surface what Pulse is actually reading, so a wrong-directory setup (e.g.
@@ -2490,6 +2609,68 @@ function computeBudget(periods, week, now) {
   const pct = (spent / target) * 100;
   const state = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : 'ok';
   return { target, period, label, spent, pct, remaining: Math.max(0, target - spent), resetsAt, state, projected };
+}
+
+// ---------------------------------------------------------------------------
+// PLAN VALUE — "is the subscription paying for itself?". `planCost` (USD/month
+// the user actually pays) + optional `planLabel` in ~/.pulse/config.json, set
+// via /api/plan/set. Compares that outlay against the API list-price value of
+// the usage Pulse observed. Always present in the payload (configured:false
+// when unset) so the UI can offer the setup card without a second shape.
+// ---------------------------------------------------------------------------
+// C0 + C1 control characters. The plan label is user text that ends up printed
+// to a terminal by --summary and appended to ~/.pulse/pulse.log, where an ESC
+// byte is an executable ANSI command rather than a character — strip on the way
+// in (the route) AND on the way out (rendering), so a label stored by an older
+// version can't still hijack the terminal.
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/g;
+const stripControl = (s) => String(s).replace(CONTROL_CHARS, '');
+// Plausible range for a monthly subscription. Guards against denormals at the
+// bottom (Infinity multipliers) and nonsense at the top.
+const PLAN_COST_MIN = 0.01, PLAN_COST_MAX = 1e6;
+function planConfig() {
+  const c = readConfig();
+  const cost = typeof c.planCost === 'number' && isFinite(c.planCost) && c.planCost > 0 ? c.planCost : null;
+  const label = cost && typeof c.planLabel === 'string' && c.planLabel ? c.planLabel : null;
+  return { cost, label };
+}
+const PLAN_MONTHS = 6;
+// periods must be the SAME period objects the dashboard shows (live + archive
+// already merged per cell) — the multiplier has to agree with the spend figures
+// on screen, and archive-backed months must count.
+function computePlanValue(periods, now) {
+  const { cost, label } = planConfig();
+  const list = periods || [];
+  const last30 = list.find((p) => p.key === 'last30');
+  const spend30 = last30 ? last30.cost : 0;
+  // The CURRENT calendar month is only partly spent, but it is divided by a
+  // FULL month of plan cost — so on the 2nd of the month a perfectly healthy
+  // month reads as "the plan isn't paying for itself". Flag it (and say how far
+  // through the month we are) so the UI can render it as in-progress instead of
+  // as a failure. Same local-time elapsed fraction computeBudget projects with.
+  const nowMs = now == null ? Date.now() : now;
+  const d = new Date(nowMs);
+  const curKey = localDateStr(nowMs).slice(0, 7);
+  const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+  const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
+  const elapsedFraction = Math.min(1, Math.max(0, (nowMs - monthStart) / (monthEnd - monthStart)));
+  const months = list
+    .filter((p) => /^\d{4}-\d{2}$/.test(p.key))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)) // periods are newest-first; the chart wants oldest-first
+    .slice(-PLAN_MONTHS)
+    .map((p) => {
+      const m = { key: p.key, spend: p.cost, multiplier: cost ? p.cost / cost : null };
+      if (p.key === curKey) { m.partial = true; m.elapsedFraction = elapsedFraction; }
+      return m;
+    });
+  return {
+    configured: !!cost,
+    cost,
+    label,
+    spend30,
+    multiplier: cost ? spend30 / cost : null,
+    months,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4488,6 +4669,45 @@ function startServer(port, host, opts) {
         res.end(JSON.stringify({ ok: true, budget: target ? { target, period } : null }));
         return;
       }
+      if (route === '/api/plan/set') {
+        if (!allowMutation(req, res)) return;
+        const q = url.parse(req.url, true).query || {};
+        const amount = parseFloat(q.amount);
+        // amount <= 0 / blank / NaN clears the plan — and the label with it, so
+        // a stale "Max 20x" can never outlive the number it described.
+        const clearing = !(isFinite(amount) && amount > 0);
+        // Anything in range is a plan someone could actually pay for. Outside it
+        // is rejected rather than stored: a denormal like 5e-324 passes
+        // "finite and > 0" but makes every multiplier Infinity (→ JSON null →
+        // a "—x" rendered beside a confident dollar figure), and --summary would
+        // report the plan as costing "$0.00/mo".
+        if (!clearing && (amount < PLAN_COST_MIN || amount > PLAN_COST_MAX)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'amount must be between ' + PLAN_COST_MIN + ' and ' + PLAN_COST_MAX }));
+          return;
+        }
+        const planCost = clearing ? null : amount;
+        // Strip C0/C1 control characters BEFORE the length slice (slicing first
+        // could cut a multi-byte escape and leave a fragment). An unsanitized
+        // label reaches the terminal via --summary OUTSIDE the colour gate, so
+        // an embedded ESC would run as an ANSI command (\x1b[2J clears the
+        // screen) even under NO_COLOR, and be replayed from ~/.pulse/pulse.log.
+        const rawLabel = typeof q.label === 'string' ? q.label.replace(CONTROL_CHARS, '').trim() : '';
+        const planLabel = planCost && rawLabel ? rawLabel.slice(0, 60) : null;
+        writeConfig({ planCost, planLabel });
+        console.log('[pulse] plan ' + (planCost ? '$' + planCost + '/mo' + (planLabel ? ' (' + planLabel + ')' : '') : 'cleared') + ' from the dashboard');
+        // Echo the payload block, not just the config, so the caller can render
+        // the new state without a second round trip. writeConfig busted the
+        // summary memo, so this build already reflects the new plan. If the
+        // rebuild fails the write still stands — answer with the spend-less
+        // block rather than a 500 that implies nothing was saved.
+        let planValue;
+        try { planValue = buildSummary(null).planValue; }
+        catch (_) { planValue = computePlanValue([]); }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, planValue }));
+        return;
+      }
       if (route === '/api/update/check') {
         if (!allowMutation(req, res)) return;
         checkForUpdate((st) => {
@@ -4923,15 +5143,19 @@ function q(s) {
 // still prints a useful line from the stdin payload alone, and we always exit 0
 // (a non-zero exit blanks the status line).
 // ---------------------------------------------------------------------------
-function slHttpGetJson(url, timeoutMs, cb) {
+// maxBytes guards a runaway response. The statusline feed is tiny; --summary
+// pulls the full payload, which with two years of month periods is comfortably
+// larger than 1 MB — hence the parameter rather than a shared constant.
+function slHttpGetJson(url, timeoutMs, cb, maxBytes) {
   let done = false;
+  const cap = maxBytes || 1e6;
   const finish = (e, d) => { if (!done) { done = true; cb(e, d); } };
   try {
     const req = http.get(url, { timeout: timeoutMs }, (res) => {
       if (res.statusCode !== 200) { res.resume(); return finish(new Error('HTTP ' + res.statusCode)); }
       let body = '';
       res.setEncoding('utf8');
-      res.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy(new Error('too large')); });
+      res.on('data', (d) => { body += d; if (body.length > cap) req.destroy(new Error('too large')); });
       res.on('end', () => { try { finish(null, JSON.parse(body)); } catch (e) { finish(e); } });
       res.on('error', finish);
     });
@@ -5019,6 +5243,110 @@ function runStatusline() {
   } catch (_) { finish(); }
 }
 
+// ---------------------------------------------------------------------------
+// `--summary` — the dashboard's headline numbers in the terminal, no browser.
+// Same discovery + fail-open discipline as --statusline: ask the RUNNING server
+// (it already has everything parsed and cached) via ~/.pulse/server.json, and
+// only fall back to an in-process build when nothing is listening. Always
+// exits 0 — a summary that fails to format must never break a shell script.
+// ---------------------------------------------------------------------------
+function summaryLines(s) {
+  const noColor = !!process.env.NO_COLOR || !process.stdout.isTTY;
+  const wrap = (open, t) => noColor ? t : '\x1b[' + open + 'm' + t + '\x1b[0m';
+  const dim = (t) => wrap('2', t);
+  const bold = (t) => wrap('1', t);
+  const accent = (t) => wrap('38;5;141', t);
+  const heat = (pct, t) => wrap(pct >= 85 ? '38;5;167' : pct >= 60 ? '38;5;179' : '38;5;71', t);
+  const out = [];
+  const row = (label, value, tail) => out.push('  ' + dim(label.padEnd(10)) + value + (tail ? ' ' + dim(tail) : ''));
+
+  out.push('');
+  out.push('  ' + accent('Pulse v' + (s.version || PULSE_VERSION)) + dim(' — usage summary'));
+  out.push('');
+
+  const p30 = (s.periods || []).find((p) => p.key === 'last30');
+  const spend = (label, o) => { if (o) row(label, bold(fmtMoney(o.cost || 0).padStart(9)), fmtTok(o.tokens || 0) + ' tokens'); };
+  spend('today', s.today);
+  spend('7 days', s.week);
+  spend('30 days', p30);
+
+  // Meter percentages, when the (opt-in) account meters are on. Codex's come
+  // from the local rollout snapshots, so they can be present on their own.
+  const meterRows = [];
+  const buckets = (s.meters && s.meters.enabled && Array.isArray(s.meters.buckets)) ? s.meters.buckets : [];
+  const fh = buckets.find((b) => b.key === 'five_hour');
+  const wk = buckets.find((b) => b.key === 'seven_day' || b.key === 'seven_day_overall');
+  if (fh) meterRows.push(['5h', fh]);
+  if (wk) meterRows.push(['weekly', wk]);
+  const cx = (s.codexMeters && Array.isArray(s.codexMeters.buckets) ? s.codexMeters.buckets : [])
+    .find((b) => b.key === 'codex_secondary' && !b.stale);
+  if (cx) meterRows.push(['codex wk', cx]);
+  if (meterRows.length) {
+    out.push('');
+    for (const [label, b] of meterRows) {
+      const pct = Math.round(b.pct || 0);
+      const left = b.resetsAt && b.resetsAt > Date.now() ? 'resets in ' + slDur(b.resetsAt - Date.now()) : '';
+      row(label, heat(pct, (pct + '%').padStart(9)), left); // pad the plain text, THEN color — escapes have width 0
+    }
+  }
+
+  const pv = s.planValue;
+  if (pv && pv.configured) {
+    out.push('');
+    const mult = pv.multiplier != null ? pv.multiplier.toFixed(1) + 'x' : '—';
+    // Re-strip on render: the label is printed outside the colour gate, so a
+    // control character stored by an older Pulse must not reach the terminal.
+    const plabel = pv.label ? stripControl(pv.label) : '';
+    row('plan', bold(mult), (plabel ? plabel + ' · ' : '') + fmtMoney(pv.cost) + '/mo vs ' + fmtMoney(pv.spend30) + ' in 30 days');
+  }
+
+  const byModel = (p30 && p30.byModel) || {};
+  const top = Object.keys(byModel).sort((a, b) => byModel[b].cost - byModel[a].cost).slice(0, 3);
+  if (top.length) {
+    out.push('');
+    out.push('  ' + dim('top models (30 days)'));
+    for (const m of top) out.push('    ' + m.padEnd(26) + bold(fmtMoney(byModel[m].cost).padStart(9)));
+  }
+  out.push('');
+  return out.join('\n');
+}
+
+function runSummary() {
+  const done = (text) => {
+    const bail = setTimeout(() => process.exit(0), 400); // stdout is a pipe; never hang
+    if (bail.unref) bail.unref();
+    try { process.stdout.write(text + '\n', () => process.exit(0)); }
+    catch (_) { process.exit(0); }
+  };
+  const render = (s) => {
+    let text;
+    try { text = summaryLines(s); }
+    catch (_) { text = '\n  Pulse — summary unavailable (could not format the payload).\n'; }
+    done(text);
+  };
+  const local = () => {
+    // Nothing listening: parse in this process. Slower and it can't see the
+    // server's cached meters, but it is the same code path the server runs.
+    // parseAll and the pricing table narrate to the console; a readout piped
+    // into another command has to be the readout alone, so mute them for the
+    // build and restore before anything else can need them.
+    const saved = [console.log, console.warn, console.error];
+    console.log = console.warn = console.error = () => {};
+    let s = null, err = null;
+    try { s = buildSummary(null, { background: true }); } catch (e) { err = e; }
+    [console.log, console.warn, console.error] = saved;
+    if (err) return done('\n  Pulse — could not read your usage logs: ' + (err.message || err) + '\n');
+    render(s);
+  };
+  const rt = readRuntimeFile();
+  const host = (rt && rt.host) || '127.0.0.1';
+  const port = (rt && rt.port) || (process.env.PORT ? parseInt(process.env.PORT, 10) : 4747);
+  slHttpGetJson('http://' + host + ':' + port + '/api/summary', 4000, (err, data) => {
+    if (err || !data) return local();
+    render(data);
+  }, 32e6);
+}
+
 // `--statusline-setup` — print (never write) the settings.json snippet. As with
 // --effort-setup, Pulse never edits ~/.claude itself.
 function statuslineSetup() {
@@ -5063,6 +5391,7 @@ function parseArgs(argv) {
     else if (a === '--inspect-schema') { out.inspectSchema = true; }
     else if (a === '--mode-hook') { out.modeHook = true; }
     else if (a === '--effort-setup') { out.effortSetup = true; }
+    else if (a === '--summary') { out.summary = true; }
     else if (a === '--statusline') { out.statusline = true; }
     else if (a === '--statusline-setup') { out.statuslineSetup = true; }
     else if (a === '--no-open') { out.noOpen = true; }
@@ -5163,6 +5492,9 @@ function main() {
     console.log('                    warning it prints; prefer an SSH tunnel instead.');
     console.log('  --effort-setup    print the Claude Code hooks snippet that enables');
     console.log('                    reasoning-effort logging (Pulse never edits ~/.claude)');
+    console.log('  --summary         print today / 7d / 30d spend, limit meters and top');
+    console.log('                    models to the terminal and exit (no browser). Reads');
+    console.log('                    the running server when there is one. NO_COLOR works.');
     console.log('  --statusline      run as a Claude Code status line (reads the JSON on');
     console.log('                    stdin, prints a line enriched with Pulse\'s numbers)');
     console.log('  --statusline-setup  print the settings.json snippet to enable it');
@@ -5188,6 +5520,7 @@ function main() {
   }
   if (args.version) { console.log('pulse v' + PULSE_VERSION); return; }
   if (args.modeHook) { runModeHook(); return; }
+  if (args.summary) { runSummary(); return; }
   if (args.statusline) { runStatusline(); return; }
   if (args.statuslineSetup) { statuslineSetup(); return; }
   if (args.effortSetup) { effortSetup(); return; }

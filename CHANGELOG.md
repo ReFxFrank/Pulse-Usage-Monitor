@@ -1,5 +1,61 @@
 # Changelog
 
+## v1.26.0
+
+- **What your subscription is actually worth.** Pulse has always known your
+  API-equivalent spend; now it tells you what that's worth against what you
+  pay. Set your monthly plan cost (inline on the new card, or `"planCost"` +
+  optional `"planLabel"` in config) and the dashboard leads with the
+  multiplier — *"14.2× your plan"* — plus the 30-day figure behind it and a
+  six-month history with a break-even line. A month under 1× is stated
+  neutrally, not as a failure: it just means the plan covered more than you
+  drew on it. `payload.planValue`, POST `/api/plan/set`.
+- **Cache savings, honestly netted.** Prompt caching is not free: reads cost
+  10% of input, but *writes* cost 1.25× (5-minute) or 2× (1-hour). Pulse now
+  reports what caching saved you **net of what the writes cost** — the true
+  number, not the flattering one — with the gross saving and write premium
+  broken out beside it. A write-heavy window reports a negative net rather
+  than being clamped to zero. `period.cacheSavings`.
+- **What fast mode costs you.** Following v1.25.0's fast-mode pricing, the
+  by-model card now shows the figure that actually matters: how much the
+  `/fast` premium cost *above standard rates* for the period. Hidden entirely
+  when you haven't used fast mode. `period.speedSpend`.
+- **`pulse --summary`** — a terminal readout with no browser: today / 7-day /
+  30-day spend and tokens, live meter percentages with reset countdowns, your
+  plan multiplier, and the top models by spend. Talks to a running server when
+  there is one and computes locally when there isn't; respects `NO_COLOR`, and
+  always exits 0 so it is safe in a prompt or a script.
+- **`totals.bySource`** — all-time spend per source (live + archive), which is
+  what the Pulse Strip's per-provider *All Time* tab needed.
+- **Honesty fixes from the adversarial review** (10 confirmed; the arithmetic
+  was verified correct by hand — every one of these was about a true number
+  being *presented* misleadingly):
+  - Cache and fast-mode figures are computed from live entries while the
+    period's spend includes the sealed archive. On a mostly-archived window
+    they could cover a sliver of the headline with nothing saying so (one
+    repro: a `−$4.10` cache line under a **$5,055** total). They now state
+    their coverage — *"covers $X of this period's $Y still in your logs"* —
+    whenever it is materially below the total, and stay silent when it isn't.
+  - The plan chart no longer scores the **current, partial** month against a
+    full month's cost. It is marked partial, rendered distinctly, worded
+    "so far", and can never be styled as failing to break even.
+  - `planLabel` is stripped of control characters: a crafted label could
+    inject raw ANSI into `pulse --summary` (a `\x1b[2J` clears your terminal)
+    even under `NO_COLOR=1`, and was replayed into `~/.pulse/pulse.log`.
+  - `planCost` is range-checked (0.01–1e6); a denormal produced an infinite
+    multiplier that serialised to `null` and rendered as "—×" beside a
+    confident dollar figure.
+  - Cline/Roo entries carry their own recorded cost, so Pulse no longer
+    re-prices them for cache savings — with an unresolvable model they fell to
+    the `__default__` row and invented savings unrelated to the cost shown
+    beside them.
+  - Zero-priced models (`<synthetic>`, the free `glm-*-flash` rows) no longer
+    pad the "off N cached read tokens" denominator with tokens that saved $0.
+  - The plan card states it covers **all sources** (it is account-level and
+    deliberately ignores the source filter), and the "you'd have paid $X more"
+    line is gone — it was false for the providers a Claude subscription never
+    covered.
+
 ## v1.25.0
 
 - **Claude Opus 5 support** (released 2026-07-21). `claude-opus-5` prices at
