@@ -74,6 +74,15 @@ logs already on your machine.
   click-to-open mini overview. Zero dependencies — hand-rolled PowerShell
   fed by the local statusline endpoint. Tip: Windows hides new tray icons
   behind the `^` chevron — drag Pulse out once to pin it.
+- 💾 **Windows installer** — `PulseSetup.exe` is a normal double-click wizard:
+  per-user install (**no admin**), Start Menu + optional Desktop shortcuts, an
+  Add/Remove Programs entry, and opt-in checkboxes for **start at sign-in** and
+  **include Pulse Strip**. Uninstalling keeps your settings and usage history.
+  Prefer portable? `pulse.exe` still works exactly as before.
+- 🔌 **Start with Windows** (opt-in) — one per-user startup entry (no admin) so
+  Pulse comes up silently at sign-in, no browser popup. Toggle it in the Server
+  panel or with `pulse --startup on|off`; remove it from the same switch. This
+  is the only thing Pulse writes outside `~/.pulse`.
 - 📊 **Pulse Strip** (opt-in, Windows) — your usage right on the taskbar:
   a slim transparent strip with each provider's **% left** (rotating with
   today's spend), and a click-to-open **popover** with meter bars, reset

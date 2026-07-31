@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.27.0
+
+- **A real installer.** `PulseSetup.exe` is now the headline Windows download —
+  a normal double-click wizard built with Inno Setup and shipped as a 5th
+  release asset. It installs **for the current user only**
+  (`%LOCALAPPDATA%\Programs\Pulse`, **no admin, no UAC prompt**), adds Start
+  Menu and optional Desktop shortcuts, and registers in Add/Remove Programs.
+  Two opt-in checkboxes: **start Pulse when you sign in** and **include Pulse
+  Strip**. The portable `pulse.exe` still works exactly as before — nothing
+  about it changed.
+- **Uninstalling keeps your data.** The uninstaller removes the binaries,
+  shortcuts, registry entries and the startup entry, and deliberately leaves
+  `~/.pulse` — your config, budget, plan cost and sealed history archive —
+  untouched. Both the wizard and `--uninstall` say so on screen.
+- **Run at startup, as a toggle you own.** A new **Start with Windows** switch
+  in the Server panel (plus `pulse --startup on|off|status`) writes a single
+  per-user entry to `HKCU\…\CurrentVersion\Run` pointing at
+  `"<pulse.exe>" --no-open`, so Pulse comes up silently at sign-in with no
+  browser popup. It is off unless you ask for it, removable from the same
+  toggle (or Task Manager → Startup), and never needs admin. **This is the one
+  thing Pulse writes outside `~/.pulse`** — that is inherent to a startup
+  entry, and it is documented as a deliberate, opt-in exception.
+- **`--install` / `--uninstall`** do the same job from the terminal for people
+  who prefer the portable binary: copy into place, shortcuts, Add/Remove
+  Programs entry, and a plain summary of everything that changed.
+- The binaries remain **unsigned**, so SmartScreen still warns on the
+  installer — an installer doesn't change that, and the release notes say so
+  rather than implying otherwise.
+
 ## v1.26.0
 
 - **What your subscription is actually worth.** Pulse has always known your

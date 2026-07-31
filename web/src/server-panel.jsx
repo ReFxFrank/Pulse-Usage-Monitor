@@ -115,6 +115,21 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
     setBusy(null);
   }
 
+  // The ONE toggle that writes outside ~/.pulse: a per-user Windows Run-key
+  // entry (HKCU, no admin). Opt-in, and removable from this same button — say
+  // so plainly in the note so nobody has to go hunting in regedit.
+  async function onToggleStartup() {
+    setBusy('startup');
+    try {
+      const on = !(data.startup && data.startup.enabled);
+      await postJson('/api/startup/' + (on ? 'enable' : 'disable'));
+      setNote(on
+        ? 'Pulse will start with Windows — server only, no browser window. It adds one per-user startup entry (no admin); turn it off here or in Task Manager → Startup.'
+        : 'Startup entry removed — Pulse no longer starts with Windows.');
+    } catch (e) { setNote('Could not change the startup setting: ' + e.message); }
+    setBusy(null);
+  }
+
   async function onToggleDiscord() {
     setBusy('discord');
     try {
@@ -241,6 +256,16 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
             {busy === 'tray' ? 'Saving…' : ('Tray icon: ' + (data.tray.enabled ? 'on' : 'off'))}
           </button>
         )}
+        {data.startup && data.startup.supported && (
+          <button
+            className="btn ghost"
+            onClick={onToggleStartup}
+            disabled={busy === 'startup'}
+            title="Starts the Pulse server when you log in to Windows — silently, with no browser window. Adds a per-user startup entry (HKCU Run); no admin rights, removable from this button or Task Manager → Startup."
+          >
+            {busy === 'startup' ? 'Saving…' : ('Start with Windows: ' + (data.startup.enabled ? 'on' : 'off'))}
+          </button>
+        )}
         {data.strip && data.strip.supported && (
           <button
             className="btn ghost"
@@ -286,6 +311,16 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
         (nothing sent over the network by Pulse). Works out of the box: just flip it on with Discord running.
         It’s public to anyone who can see your profile.
       </div>
+      {data.startup && data.startup.supported && (
+        <div className="sub" style={{ margin: '-4px 0 4px' }}>
+          <b style={{ color: 'var(--text-2)' }}>Start with Windows</b> (opt-in) adds a per-user startup entry
+          (<code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code>) that launches the Pulse server at
+          login with <code>--no-open</code>, so nothing pops up — the dashboard is there when you want it. No
+          admin rights, nothing installed for other users; remove it with this toggle or from Task Manager →
+          Startup. It’s the one setting Pulse stores outside <code>~/.pulse</code>, because that’s where Windows
+          looks.
+        </div>
+      )}
       {data.history && data.history.enabled && (
         <div className="sub" style={{ margin: '-4px 0 4px' }}>
           <b style={{ color: 'var(--text-2)' }}>History</b> — Pulse archives each past day’s totals to{' '}

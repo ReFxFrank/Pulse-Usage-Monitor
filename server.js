@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.26.0';
+const PULSE_VERSION = '1.27.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -2466,6 +2466,9 @@ function buildSummary(sourceFilter, opts) {
   payload.tray = { supported: process.platform === 'win32', enabled: trayDesired !== null ? trayDesired : readConfig().tray === true };
   payload.openusage = { supported: process.platform === 'win32', enabled: readConfig().openusage === true, path: findOpenUsage() };
   payload.strip = { supported: process.platform === 'win32', enabled: readConfig().strip === true, path: findPulseStrip() };
+  // Run at startup: registry-backed (not config), memoized so this costs
+  // nothing per build.
+  payload.startup = startupForPayload();
   // Server-panel visibility into the process footprint (RSS + JS heap).
   try {
     const mu = process.memoryUsage();
@@ -4432,6 +4435,107 @@ function launchPulseStrip() {
   });
 }
 
+// ---- RUN AT STARTUP (opt-in, Windows) -------------------------------------
+// The ONE thing Pulse deliberately writes outside ~/.pulse: a value under the
+// per-user Run key. That is inherent — a startup entry has to live where
+// Windows looks for one. It stays honest by being opt-in, reversible from the
+// same UI/CLI that created it, and HKCU-only (no admin rights, no machine-wide
+// state). Written with reg.exe, a Windows builtin, via execFile with an argv
+// array (never a shell string) so the quoted path can't be re-parsed.
+const STARTUP_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const STARTUP_VALUE_NAME = 'Pulse';
+// Test hook: PULSE_STARTUP_STUB=<file> routes the whole feature through a JSON
+// file instead of the registry, so the suites can exercise enable/disable
+// without ever touching a real machine's Run key (same convention as
+// PULSE_METERS_API / PULSE_DISCORD_IPC / PULSE_MODES_FILE).
+function startupStubFile() { return process.env.PULSE_STARTUP_STUB || ''; }
+// `--no-open` suppresses the browser, so signing in starts the server silently.
+// From a source checkout the value has to carry node + the script path; that
+// still works, it's just tied to wherever node lives.
+function startupCommand() {
+  return seaApi
+    ? `"${process.execPath}" --no-open`
+    : `"${process.execPath}" "${__filename}" --no-open`;
+}
+// Windows-only in the real world; the stub also flips support on so a suite
+// can drive the feature end-to-end wherever it runs.
+function startupSupported() { return process.platform === 'win32' || !!startupStubFile(); }
+
+let startupWarned = false; // reg.exe failures warn once, never per payload
+function readStartupEntry() {
+  const stub = startupStubFile();
+  if (stub) {
+    try {
+      const j = JSON.parse(fs.readFileSync(stub, 'utf8')) || {};
+      return { enabled: !!j.enabled, command: typeof j.command === 'string' ? j.command : '' };
+    } catch (_) { return { enabled: false, command: '' }; } // no stub file yet = not enabled
+  }
+  if (process.platform !== 'win32') return { enabled: false, command: '' };
+  try {
+    const out = require('child_process').execFileSync('reg.exe',
+      ['query', STARTUP_RUN_KEY, '/v', STARTUP_VALUE_NAME],
+      { windowsHide: true, encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
+    // "    Pulse    REG_SZ    "C:\...\pulse.exe" --no-open"  (lazy + \s*$ keeps
+    // interior spaces of the command but trims the CRLF padding)
+    const m = new RegExp('^\\s*' + STARTUP_VALUE_NAME + '\\s+REG_[A-Z_]+\\s+(.*?)\\s*$', 'm').exec(out || '');
+    return m ? { enabled: true, command: m[1] } : { enabled: false, command: '' };
+  } catch (e) {
+    // reg.exe reports "no such value" as exit status 1 — that is the ordinary
+    // not-enabled case, not an error. Anything else (reg.exe missing, hive
+    // unreadable) fails CLOSED to disabled and warns once: a checkbox must
+    // never be able to throw out of a payload build.
+    if (!e || e.status !== 1) {
+      if (!startupWarned) {
+        startupWarned = true;
+        console.warn('[pulse] could not read the startup registry entry: ' + ((e && e.message) || e));
+      }
+    }
+    return { enabled: false, command: '' };
+  }
+}
+// Memoized like findPulseStrip/findOpenUsage: payload.startup is built on every
+// summary, and spawning reg.exe per build is not acceptable.
+let startupMemo = { at: 0, state: null };
+function startupState(force) {
+  const now = Date.now();
+  if (!force && startupMemo.state && now - startupMemo.at < 30000) return startupMemo.state;
+  const state = readStartupEntry();
+  startupMemo = { at: now, state };
+  return state;
+}
+function startupForPayload() {
+  return { supported: startupSupported(), enabled: !!startupState().enabled };
+}
+// Returns { ok, command, error } — callers report, never throw.
+function setStartup(on) {
+  const command = startupCommand();
+  startupMemo = { at: 0, state: null }; // a write must never be shadowed by the read memo
+  const stub = startupStubFile();
+  if (stub) {
+    try {
+      fs.mkdirSync(path.dirname(stub), { recursive: true });
+      fs.writeFileSync(stub, JSON.stringify({ enabled: !!on, command: on ? command : '' }, null, 2) + '\n');
+      return { ok: true, command: on ? command : '' };
+    } catch (e) { return { ok: false, command: '', error: (e && e.message) || String(e) }; }
+  }
+  if (process.platform !== 'win32') return { ok: false, command: '', error: 'run at startup is Windows-only' };
+  const cp = require('child_process');
+  const opts = { windowsHide: true, timeout: 10000, stdio: ['ignore', 'ignore', 'pipe'] };
+  try {
+    if (on) {
+      cp.execFileSync('reg.exe',
+        ['add', STARTUP_RUN_KEY, '/v', STARTUP_VALUE_NAME, '/t', 'REG_SZ', '/d', command, '/f'], opts);
+    } else {
+      try {
+        cp.execFileSync('reg.exe', ['delete', STARTUP_RUN_KEY, '/v', STARTUP_VALUE_NAME, '/f'], opts);
+      } catch (e) {
+        if (!e || e.status !== 1) throw e; // status 1 = already absent, which IS the goal
+      }
+    }
+    return { ok: true, command: on ? command : '' };
+  } catch (e) { return { ok: false, command: '', error: (e && e.message) || String(e) }; }
+}
+
 function startServer(port, host, opts) {
   const boundLoopback = LOOPBACK_HOSTS.has(host);
   const server = http.createServer((req, res) => {
@@ -4638,6 +4742,21 @@ function startServer(port, host, opts) {
         if (on && process.platform === 'win32' && boundLoopback) launchPulseStrip();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, strip: { supported: process.platform === 'win32', enabled: on, path: findPulseStrip() } }));
+        return;
+      }
+      if (route === '/api/startup/enable' || route === '/api/startup/disable') {
+        if (!allowMutation(req, res)) return;
+        const on = route.endsWith('enable');
+        // No path/command parameter, for the same reason as strip/openusage:
+        // what gets written into the Run key comes from THIS binary's own
+        // path, never from anything a loopback caller supplies.
+        const r = setStartup(on);
+        console.log('[pulse] run at startup ' + (on ? 'enabled' : 'disabled') + ' from the dashboard'
+          + (r.ok ? '' : ' — FAILED: ' + r.error));
+        res.writeHead(r.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(r.ok
+          ? { ok: true, startup: startupForPayload() }
+          : { ok: false, error: r.error, startup: startupForPayload() }));
         return;
       }
       if (route === '/api/openusage/enable' || route === '/api/openusage/disable') {
@@ -4955,40 +5074,280 @@ function stopRunning(port) {
   });
 }
 
-function installShortcuts() {
+// Shortcut plumbing shared by --install-shortcuts and --install: WScript.Shell
+// driven from powershell.exe. Both are Windows builtins, so no dependency.
+function psQuote(s) { return "'" + String(s).replace(/'/g, "''") + "'"; }
+function createShortcuts(specs) {
+  const lines = ['$W = New-Object -ComObject WScript.Shell;'];
+  specs.forEach((s, i) => {
+    lines.push(`$s${i} = $W.CreateShortcut(${psQuote(s.path)});`);
+    lines.push(`$s${i}.TargetPath = ${psQuote(s.target)};`);
+    if (s.args) lines.push(`$s${i}.Arguments = ${psQuote(s.args)};`);
+    lines.push(`$s${i}.WorkingDirectory = ${psQuote(path.dirname(s.target))};`);
+    if (s.description) lines.push(`$s${i}.Description = ${psQuote(s.description)};`);
+    lines.push(`$s${i}.Save();`);
+  });
+  require('child_process').execFileSync('powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', lines.join(' ')],
+    { stdio: 'ignore', windowsHide: true, timeout: 30000 });
+}
+// The Desktop is routinely redirected (OneDrive), so ask Windows for it rather
+// than assuming %USERPROFILE%\Desktop — and keep the conventional spots as
+// fallbacks, which --uninstall also sweeps. One powershell spawn per process.
+let desktopDirsMemo = null;
+function desktopDirs() {
+  if (desktopDirsMemo) return desktopDirsMemo;
+  const out = [];
+  try {
+    const s = require('child_process').execFileSync('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"],
+      { encoding: 'utf8', windowsHide: true, timeout: 20000 }).trim();
+    if (s) out.push(s);
+  } catch (_) { /* fall back below */ }
+  const home = os.homedir();
+  const fallbacks = [path.join(home, 'Desktop')];
+  if (process.env.ONEDRIVE) fallbacks.push(path.join(process.env.ONEDRIVE, 'Desktop'));
+  for (const p of fallbacks) {
+    if (!out.some((x) => samePath(x, p))) out.push(p);
+  }
+  desktopDirsMemo = out;
+  return out;
+}
+
+// targetExe: what the shortcuts should point at (--install passes the INSTALLED
+// copy; on its own this defaults to the running exe). Returns success.
+function installShortcuts(targetExe) {
   if (process.platform !== 'win32') {
     console.log('[pulse] Desktop shortcuts are Windows-only.');
     console.log('[pulse] Start: run the binary (idempotent). Stop: --stop.');
-    return;
+    return false;
   }
   if (!seaApi) {
     console.log('[pulse] run this from the packaged pulse.exe so shortcuts point at it.');
-    return;
+    return false;
   }
-  const exe = process.execPath.replace(/'/g, "''"); // PS single-quote escape
-  const ps = [
-    "$W = New-Object -ComObject WScript.Shell;",
-    "$d = [Environment]::GetFolderPath('Desktop');",
-    "$s = $W.CreateShortcut((Join-Path $d 'Pulse.lnk'));",
-    `$s.TargetPath = '${exe}';`,
-    "$s.Description = 'Start Pulse (opens the dashboard if already running)';",
-    "$s.Save();",
-    "$t = $W.CreateShortcut((Join-Path $d 'Pulse - Stop.lnk'));",
-    `$t.TargetPath = '${exe}';`,
-    "$t.Arguments = '--stop';",
-    "$t.Description = 'Stop the running Pulse';",
-    "$t.Save();",
-  ].join(' ');
+  const exe = targetExe || process.execPath;
+  const desktop = desktopDirs()[0];
   try {
-    require('child_process').execFileSync('powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', ps],
-      { stdio: 'ignore', windowsHide: true, timeout: 20000 });
+    createShortcuts([
+      { path: path.join(desktop, 'Pulse.lnk'), target: exe,
+        description: 'Start Pulse (opens the dashboard if already running)' },
+      { path: path.join(desktop, 'Pulse - Stop.lnk'), target: exe, args: '--stop',
+        description: 'Stop the running Pulse' },
+    ]);
     console.log('[pulse] created Desktop shortcuts:');
     console.log('  "Pulse"        — start (or open the dashboard if already running)');
     console.log('  "Pulse - Stop" — stop the running Pulse');
+    return true;
   } catch (e) {
     console.error('[pulse] could not create shortcuts: ' + ((e && e.message) || e));
+    return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// `--install` / `--uninstall` (Windows, packaged exe)
+//
+// The primitives the Inno Setup installer wraps, usable on their own: copy the
+// exe into the per-user Programs folder, add Start Menu + Desktop shortcuts,
+// and register in Add/Remove Programs. Everything lands under HKCU and
+// %LOCALAPPDATA%/%APPDATA% — no admin rights anywhere, and nothing
+// machine-wide. Uninstall reverses all of it but NEVER touches ~/.pulse: a
+// user's config and archived history are not ours to delete.
+// ---------------------------------------------------------------------------
+const UNINSTALL_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Pulse';
+function programsDir() {
+  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(local, 'Programs', 'Pulse');
+}
+function installedExePath() { return path.join(programsDir(), 'pulse.exe'); }
+function startMenuLnk() {
+  const appdata = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(appdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Pulse.lnk');
+}
+const samePath = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+const errMsg = (e) => (e && e.message) || String(e);
+
+function installApp() {
+  if (process.platform !== 'win32') {
+    console.log('[pulse] --install is Windows-only. Elsewhere: put the binary on your PATH.');
+    return;
+  }
+  if (!seaApi) {
+    console.log('[pulse] run --install from the packaged pulse.exe (a source checkout has nothing to install).');
+    return;
+  }
+  const target = installedExePath();
+  const changed = [];
+
+  if (samePath(process.execPath, target)) {
+    changed.push('already installed at ' + target + ' (no copy needed)');
+  } else {
+    try {
+      fs.mkdirSync(programsDir(), { recursive: true });
+      fs.copyFileSync(process.execPath, target);
+      changed.push('copied pulse.exe -> ' + target);
+    } catch (e) {
+      console.error('[pulse] could not copy the executable to ' + target + ': ' + errMsg(e));
+      // A running Pulse holds its own exe open — that is the usual cause.
+      console.error('[pulse] if a Pulse is running from there, stop it first:  pulse --stop');
+      return;
+    }
+  }
+
+  // Shortcuts point at the INSTALLED copy, not at wherever this exe was run
+  // from (the download in ~/Downloads is often deleted afterwards).
+  try {
+    fs.mkdirSync(path.dirname(startMenuLnk()), { recursive: true });
+    createShortcuts([{ path: startMenuLnk(), target, description: 'Start Pulse (local usage dashboard)' }]);
+    changed.push('Start Menu shortcut -> ' + startMenuLnk());
+  } catch (e) {
+    console.warn('[pulse] could not create the Start Menu shortcut: ' + errMsg(e));
+  }
+  if (installShortcuts(target)) changed.push('Desktop shortcuts "Pulse" and "Pulse - Stop"');
+
+  // Add/Remove Programs. HKCU\...\Uninstall is the per-user list, so this shows
+  // up in Settings > Apps without any elevation.
+  const vals = [
+    ['DisplayName', 'REG_SZ', 'Pulse'],
+    ['DisplayVersion', 'REG_SZ', PULSE_VERSION],
+    ['Publisher', 'REG_SZ', 'ReFxFrank'],
+    ['InstallLocation', 'REG_SZ', programsDir()],
+    ['UninstallString', 'REG_SZ', `"${target}" --uninstall`],
+    ['DisplayIcon', 'REG_SZ', target + ',0'],
+    ['NoModify', 'REG_DWORD', '1'],
+    ['NoRepair', 'REG_DWORD', '1'],
+  ];
+  try {
+    for (const [name, type, data] of vals) {
+      require('child_process').execFileSync('reg.exe',
+        ['add', UNINSTALL_KEY, '/v', name, '/t', type, '/d', data, '/f'],
+        { windowsHide: true, timeout: 10000, stdio: ['ignore', 'ignore', 'pipe'] });
+    }
+    changed.push('registered in Add/Remove Programs (uninstall with:  pulse --uninstall)');
+  } catch (e) {
+    console.warn('[pulse] could not register in Add/Remove Programs: ' + errMsg(e));
+  }
+
+  console.log('');
+  console.log('[pulse] installed v' + PULSE_VERSION + ':');
+  for (const c of changed) console.log('  • ' + c);
+  console.log('');
+  console.log('  Your data stays in ' + pulseHome() + ' (config + archived history).');
+  console.log('  Run at sign-in:  pulse --startup on   (off again with --startup off)');
+  console.log('  Note: Pulse binaries are UNSIGNED, so Windows SmartScreen may warn');
+  console.log('  the first time you run one. "More info" -> "Run anyway".');
+  console.log('');
+}
+
+function uninstallApp() {
+  if (process.platform !== 'win32') {
+    console.log('[pulse] --uninstall is Windows-only. Elsewhere: delete the binary you downloaded.');
+    return;
+  }
+  if (!seaApi) {
+    console.log('[pulse] run --uninstall from the packaged pulse.exe (a source checkout was never installed).');
+    return;
+  }
+  const removed = [], left = [];
+  const cp = require('child_process');
+
+  // 1. Startup entry first — an uninstalled Pulse must not be launched at sign-in.
+  if (startupState(true).enabled) {
+    const r = setStartup(false);
+    if (r.ok) removed.push('run-at-startup entry (' + STARTUP_RUN_KEY + '\\' + STARTUP_VALUE_NAME + ')');
+    else left.push('startup entry — ' + r.error);
+  }
+
+  // 2. Add/Remove Programs entry (status 1 = already gone, which is the goal).
+  try {
+    cp.execFileSync('reg.exe', ['delete', UNINSTALL_KEY, '/f'],
+      { windowsHide: true, timeout: 10000, stdio: ['ignore', 'ignore', 'pipe'] });
+    removed.push('Add/Remove Programs entry');
+  } catch (e) {
+    if (!e || e.status !== 1) left.push('Add/Remove Programs entry — ' + errMsg(e));
+  }
+
+  // 3. Shortcuts (every Desktop candidate: the folder may be OneDrive-redirected).
+  const links = [startMenuLnk()];
+  for (const d of desktopDirs()) { links.push(path.join(d, 'Pulse.lnk'), path.join(d, 'Pulse - Stop.lnk')); }
+  for (const l of links) {
+    try { fs.unlinkSync(l); removed.push('shortcut ' + l); }
+    catch (e) { if (e && e.code !== 'ENOENT') left.push('shortcut ' + l + ' — ' + errMsg(e)); }
+  }
+
+  // 4. The installed copy. Windows will not let a running process delete its
+  // own image, so say so plainly instead of pretending it worked.
+  const target = installedExePath();
+  let selfLeft = false;
+  if (fs.existsSync(target)) {
+    if (samePath(process.execPath, target)) {
+      selfLeft = true;
+      left.push(target + ' — still running as this process; delete it after this exits');
+    } else {
+      try {
+        fs.unlinkSync(target);
+        removed.push(target);
+        try { fs.rmdirSync(programsDir()); } catch (_) { /* other files there: leave the folder */ }
+      } catch (e) {
+        left.push(target + ' — ' + errMsg(e) + (String(errMsg(e)).match(/EBUSY|EPERM/) ? ' (stop it first:  pulse --stop)' : ''));
+      }
+    }
+  }
+
+  console.log('');
+  console.log('[pulse] uninstalled:');
+  if (!removed.length) console.log('  • nothing to remove — Pulse was not installed');
+  for (const r of removed) console.log('  • removed ' + r);
+  for (const l of left) console.log('  ! could not remove ' + l);
+  console.log('');
+  console.log('  KEPT: ' + pulseHome() + ' — your config, budget and archived history are');
+  console.log('  untouched. Delete that folder yourself if you want it gone.');
+  if (selfLeft) console.log('  KEPT: ' + target + ' (this executable) — remove it manually.');
+  console.log('');
+}
+
+// `--startup on|off|status` — the CLI face of the Run-key entry. Writes the
+// registry directly rather than going through a running server: the entry is
+// per-user state that exists with or without a server, and a running one picks
+// the change up when its 30s read memo expires. Always exits 0.
+function startupCli(mode) {
+  const m = String(mode || 'status').trim().toLowerCase();
+  const where = startupStubFile()
+    ? 'stub file ' + startupStubFile() + ' (PULSE_STARTUP_STUB)'
+    : STARTUP_RUN_KEY + '\\' + STARTUP_VALUE_NAME;
+  if (!startupSupported()) {
+    console.log('[pulse] run at startup is Windows-only.');
+    console.log('[pulse] on macOS/Linux use launchd / a systemd --user unit running:');
+    console.log('        ' + startupCommand());
+    return;
+  }
+  if (m !== 'on' && m !== 'off' && m !== 'status') {
+    console.log('[pulse] usage: pulse --startup on|off|status  (got "' + mode + '")');
+  }
+  if (m === 'on' || m === 'off') {
+    const r = setStartup(m === 'on');
+    if (!r.ok) {
+      console.error('[pulse] could not ' + (m === 'on' ? 'enable' : 'disable') + ' run at startup: ' + r.error);
+      return; // still exit 0 — a startup toggle is never worth a failing shell
+    }
+    if (m === 'on') {
+      console.log('[pulse] run at startup ENABLED.');
+      console.log('  ' + where);
+      console.log('  = ' + r.command);
+      if (!seaApi) console.log('  (source checkout — the entry runs node with this script; it breaks if either moves)');
+      console.log('  Pulse will start silently at sign-in (--no-open: no browser tab).');
+      console.log('  Turn it off with:  pulse --startup off');
+    } else {
+      console.log('[pulse] run at startup DISABLED — removed ' + where);
+    }
+    return;
+  }
+  const s = startupState(true); // status must never answer from the memo
+  console.log('[pulse] run at startup: ' + (s.enabled ? 'ON' : 'off'));
+  console.log('  ' + where);
+  if (s.enabled) console.log('  = ' + s.command);
+  console.log('  Change with:  pulse --startup ' + (s.enabled ? 'off' : 'on'));
 }
 
 // ---------------------------------------------------------------------------
@@ -5402,6 +5761,11 @@ function parseArgs(argv) {
     else if (a === '--no-update-check') { out.noUpdateCheck = true; }
     else if (a === '--stop') { out.stop = true; }
     else if (a === '--install-shortcuts') { out.installShortcuts = true; }
+    // `--startup` alone is a status read, so a missing argument is not an error.
+    else if (a === '--startup') { out.startup = argv[i + 1] && !argv[i + 1].startsWith('-') ? argv[++i] : 'status'; }
+    else if (a.startsWith('--startup=')) { out.startup = a.slice(10) || 'status'; }
+    else if (a === '--install') { out.install = true; }
+    else if (a === '--uninstall') { out.uninstall = true; }
     else if (a === '--version' || a === '-v') { out.version = true; }
     else if (a === '--help' || a === '-h') { out.help = true; }
   }
@@ -5506,6 +5870,15 @@ function main() {
   console.log('                       tooltip, open dashboard/mini, stop. Or {"tray": true}.');
   console.log('  --install-shortcuts  (Windows) add "Pulse" and "Pulse - Stop"');
     console.log('                    shortcuts to the Desktop');
+    console.log('  --startup on|off|status  (Windows) start Pulse silently when you sign');
+    console.log('                    in. The one thing Pulse writes outside ~/.pulse: a');
+    console.log('                    value under HKCU\\...\\CurrentVersion\\Run (no admin).');
+    console.log('  --install         (Windows exe) install to %LOCALAPPDATA%\\Programs\\Pulse');
+    console.log('                    with Start Menu + Desktop shortcuts and an');
+    console.log('                    Add/Remove Programs entry. The binaries are unsigned,');
+    console.log('                    so SmartScreen may still warn.');
+    console.log('  --uninstall       (Windows exe) undo --install and the startup entry.');
+    console.log('                    Your ~/.pulse config and history are kept.');
     console.log('  --no-daemon       (Windows exe) keep running in this console window');
     console.log('                    instead of backgrounding');
     console.log('  --no-update-check disable the GitHub version check (the only network');
@@ -5526,6 +5899,9 @@ function main() {
   if (args.effortSetup) { effortSetup(); return; }
   if (args.inspectSchema) { inspectSchema(); return; }
   if (args.installShortcuts) { installShortcuts(); return; }
+  if (args.startup) { startupCli(args.startup); return; }
+  if (args.install) { installApp(); return; }
+  if (args.uninstall) { uninstallApp(); return; }
   const port = resolvePort(args);
   const host = resolveHost(args);
   if (args.stop) { stopRunning(port); return; }

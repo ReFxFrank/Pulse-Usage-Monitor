@@ -15,6 +15,12 @@ the old name; git remotes redirect).
    The React toolchain (web/) is build-time only. Don't add npm deps to the
    server, ever. New protocols get hand-rolled (see the Discord IPC client).
 3. **`~/.pulse` is the ONLY writable location** (config, logs, effort sidecar).
+   ONE documented exception, added in v1.27.0: the opt-in **run-at-startup**
+   entry (`HKCU\…\CurrentVersion\Run`, value `Pulse`) and the `--install`
+   footprint (Start Menu/Desktop `.lnk`s + the HKCU Add/Remove Programs key).
+   A startup entry cannot live inside `~/.pulse` by definition. Both are
+   opt-in, per-user (never admin), reversible from the same UI, and
+   `--uninstall` never deletes `~/.pulse` data.
 4. **Binds 127.0.0.1** by default; all state-changing endpoints require
    POST + `X-Pulse: 1` + loopback + Host allowlist (`allowMutation`), and all
    GET /api routes have a DNS-rebinding guard (`allowRead`).
@@ -67,6 +73,8 @@ the old name; git remotes redirect).
 | Discord Rich Presence (opt-in) | `discordConnect` (hand-rolled IPC: 8-byte LE header + JSON over named pipe / unix socket, candidates incl. snap/flatpak), `buildDiscordActivity` (rotating pages Today / Past 7 days / All-time, wall-clock derived; large_image tracks `payload.activeProvider` — claude/codex art keys, else pulse), `DISCORD_CLIENT_ID_DEFAULT` = the official Pulse app (public identifier); reconnect is resilient — `discordIpcCandidates` tries both Windows pipe forms (`\\.\pipe\` + `\\?\pipe\`), `net.connect` is try/caught, and a failed sweep does fast re-sweeps (`DISCORD_FAST_RETRY_MS` 4s, `discordNotFoundStreak` ≤4 via a one-shot timer) before backing off to `DISCORD_RETRY_MS` 30s, so a Pulse-restart-while-Discord-runs race heals in seconds; elapsed-timer anchor (`discordPresenceStart`) PERSISTED to `~/.pulse/discord-presence.json` so a self-update relaunch (`IS_AFTER_UPDATE`) or brief restart (heartbeat < `DISCORD_START_GRACE_MS` 10m) CONTINUES the timer instead of resetting to 0; long-gap cold start resets |
 | Self-update | `checkForUpdate`, `installUpdate` — sha256 digest fail-closed, rename swap + rollback, no downgrades |
 | Community reach | `refreshReach`/`reachForPayload` → `payload.reach` = `{downloads, stars, fetchedAt, repo}` from PUBLIC GitHub only (sum of every release's asset `download_count` + repo `stargazers_count`); last-good retention per counter; scheduled beside `checkForUpdate` (startup + 6h) and gated by the SAME opt-out (`updateCheck`/`--no-update-check`); 6h cache (`PULSE_REACH_CACHE_MS`), endpoints overridable (`PULSE_REACH_API`, `PULSE_REACH_REPO_API`); NOT a phone-home — nothing about the user is sent; UI: `.reachpill` in the header (App.jsx) |
+| Run at startup (opt-in) | `startupState`/`setStartup`/`startupForPayload` (beside the Pulse Strip section): `reg.exe` (Windows builtin, argv array + `windowsHide`, never a shell string) on `HKCU\…\CurrentVersion\Run` value `Pulse` = `"<exe>" --no-open`; 30s memo like `findPulseStrip`, busted on write; reg "value not found" (status 1) is the ordinary off case, any other failure fails CLOSED to `enabled:false` + warns once, and can never throw out of a payload build. `payload.startup = {supported, enabled}`; POST `/api/startup/enable\|disable` (allowMutation); CLI `--startup on\|off\|status`. **Test hook `PULSE_STARTUP_STUB=<path>`** redirects the whole state to a JSON file so suites never touch a real registry |
+| Installer | `build/installer.iss` (Inno Setup 6, `AppId` GUID `{76C28179-…}` — NEVER change it, it is the upgrade identity): `PrivilegesRequired=lowest` + `DefaultDirName={localappdata}\Programs\Pulse` = per-user, no admin; tasks `desktopicon` (checked), `startup`/`strip` (unchecked); the Run value carries `uninsdeletevalue`, and `[Code] CurUninstallStepChanged` additionally clears a Run value that points at `{app}` (an entry made by `--startup on` was never registered for `uninsdeletevalue`); `PrepareToInstall`/`[UninstallRun]` call `--stop` so an upgrade doesn't hit a locked exe; **nothing under `~/.pulse` is ever deleted**. CI: `choco install innosetup` + `ISCC /DMyAppVersion=<tag minus v>` on the windows job → `PulseSetup.exe`, the 5th release asset. Server-side equivalents: `--install` / `--uninstall` (same paths, so re-running either overwrites rather than duplicates) |
 | Windows daemon | `--daemon-child`, `windowsHide`, `~/.pulse/pulse.log`, `--stop`, `--install-shortcuts` |
 | Status line | `--statusline` (reads Claude Code's stdin JSON, fetches slim `/api/statusline` from the running server via `~/.pulse/server.json` port, prints an ANSI line; fail-open, always exit 0), `statuslineData`/`statuslineMemo` (3s), `--statusline-setup` prints the settings.json snippet (never writes `~/.claude`); `NO_COLOR` respected |
 | Limit alerts | `computeAlerts(meters, codexMeters)` → `payload.alerts` (both Claude buckets + Codex snapshot buckets ≥ lowest threshold, deduped by `provider:key`, provider-labelled, sorted most-urgent-first, skips `stale`; **drops maxed windows** — rounded pct ≥ 100 is a reached limit, not "approaching", so it's excluded from the banner + notifications though it still shows in the meter gauges); `alertsEnabled()` (`{"alerts": false}` off), `alertThresholds()` (config `alertThresholds`, default `[80,95]`); **spend anomaly (opt-in)**: `computeSpendAnomaly(periods, now)` unshifted onto alerts — fires when today ≥ multiplier × mean of ACTIVE prior days in last30 (≥5 active days, today ≥ $5); config `anomalyAlerts === true` + `anomalyMultiplier` (default 3, floor 1.5); row has `kind:'anomaly'`, `detail`, `ratio`, pct null, date-keyed `pulse:anomaly:YYYY-MM-DD` so notifications fire once/day; UI: `AlertsBar` (panels.jsx — anomaly rows render `detail`, headline "Unusual spend —" when anomaly-only) + browser notifications in lib.js (`fireAlertNotifications` dedups via `localStorage` key `pulse-alerted`, alertKey `key\|threshold\|resetsAt`; anomaly body uses `detail`) |
@@ -118,6 +126,8 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `PULSE_METER_PROJ_MIN_MS`, `PULSE_SUMMARY_MEMO_MS` (0 disables the memo — timing-sensitive suites),
 `PULSE_NO_OPENUSAGE_SPAWN` (suppress the OpenUsage companion launch),
 `PULSE_NO_STRIP_SPAWN` (suppress the Pulse Strip launch),
+`PULSE_STARTUP_STUB` (redirect run-at-startup state to a JSON file instead of
+the registry — REQUIRED by any suite touching startup),
 `PULSE_UPDATE_API` (update-check endpoint override), `PULSE_NO_UPDATE_CHECK`
 (env form of `--no-update-check`), `PULSE_UPDATE_NO_RELAUNCH` (test hook),
 `PULSE_SECURITY_BIN` (macOS Keychain `security` binary override).
@@ -133,8 +143,12 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 4. Dispatch the release: GitHub Actions `release.yml` on ref `main` with
    input `{"tag": "vX.Y.Z"}` (in remote sessions use the GitHub MCP
    `actions_run_trigger`; repo param may need the old name `claudeusage`).
-5. Wait ~3–4 min, then verify via the release-by-tag API: all THREE assets
-   (pulse.exe, pulse-linux, pulse-macos) uploaded with sha256 digests.
+5. Wait ~3–4 min, then verify via the release-by-tag API: all FIVE assets
+   (PulseSetup.exe, pulse.exe, pulse-linux, pulse-macos, pulse-strip.exe)
+   uploaded with sha256 digests. The two Windows extras (strip + installer)
+   are built only on the windows-latest job — if that job fails, the three OS
+   binaries still publish, so check the asset COUNT, not just that a release
+   appeared.
 
 ## Testing conventions
 

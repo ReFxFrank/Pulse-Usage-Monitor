@@ -73,6 +73,36 @@ jobs:
           path: dist-strip/pulse-strip.exe
           if-no-files-found: error
 
+      # PulseSetup.exe: an Inno Setup wrapper around the two Windows binaries
+      # above (build/installer.iss). Per-user install into
+      # %LOCALAPPDATA%\Programs\Pulse — no admin, same layout `--install` uses.
+      # Must run after BOTH the SEA build and the strip publish, since it packs
+      # dist-exe\pulse.exe and dist-strip\pulse-strip.exe.
+      - name: Install Inno Setup
+        if: matrix.os == 'windows-latest'
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer (PulseSetup.exe)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          # choco installs Inno to Program Files and does not shim ISCC, so
+          # look there first and only fall back to PATH.
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { $iscc = 'iscc' }
+          & $iscc "/DMyAppVersion=$version" build\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item dist-installer\PulseSetup.exe
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: PulseSetup.exe
+          path: dist-installer/PulseSetup.exe
+          if-no-files-found: error
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -93,6 +123,7 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
+            dist/PulseSetup.exe
             dist/pulse.exe
             dist/pulse-linux
             dist/pulse-macos
@@ -102,18 +133,30 @@ jobs:
             **Pulse** — a local Claude Code usage dashboard.
 
             ### Download
-            - **Windows:** `pulse.exe` — double-click it; Pulse runs in the background (no console
-              window) and the dashboard opens at http://localhost:4747. Logs, updates and Stop live
-              in the dashboard's **Server panel**. SmartScreen may warn because the binary is
-              unsigned: click **More info → Run anyway**.
-            - **Windows taskbar strip (optional):** `pulse-strip.exe` — put it next to `pulse.exe`
-              and flip **Pulse Strip** on in the Server panel: provider % left + spend right on the
-              taskbar, click for a popover with meters, spend and trends. Ported from
+            - **Windows (easiest):** `PulseSetup.exe` — a normal installer. It installs for the
+              current user only (`%LOCALAPPDATA%\Programs\Pulse`, **no admin needed**), adds Start
+              Menu and optional Desktop shortcuts, an Add/Remove Programs entry, and offers two
+              opt-in checkboxes: **start Pulse when you sign in** (silent, no browser popup) and
+              **include Pulse Strip**. Uninstalling removes all of it and **keeps your settings and
+              usage history** in `%USERPROFILE%\.pulse`.
+            - **Windows (portable):** `pulse.exe` — no installer, double-click it; Pulse runs in the
+              background (no console window) and the dashboard opens at http://localhost:4747. Logs,
+              updates and Stop live in the dashboard's **Server panel**.
+            - **Windows taskbar strip (optional):** `pulse-strip.exe` — bundled as a checkbox in the
+              installer; with the portable exe, put it next to `pulse.exe`. Either way, flip **Pulse
+              Strip** on in the Server panel: provider % left + spend right on the taskbar, click for
+              a popover with meters, spend and trends. Ported from
               [openusage-windows](https://github.com/CheesyPoofs346/openusage-windows) (MIT) and fed
               by your local Pulse server.
             - **Linux:** `pulse-linux` — `chmod +x pulse-linux && ./pulse-linux`
             - **macOS (Apple Silicon):** `pulse-macos` — `chmod +x pulse-macos && xattr -d com.apple.quarantine pulse-macos; ./pulse-macos`
               (the `xattr` clears Gatekeeper's quarantine on the unsigned binary)
+
+            ### These binaries are unsigned
+            Pulse ships without a code-signing certificate, so Windows SmartScreen will warn on
+            `PulseSetup.exe`, `pulse.exe` and `pulse-strip.exe` — click **More info → Run anyway**.
+            The installer does not change that; every asset is built in the open by the workflow in
+            this repo, and the sha256 of each is shown in the asset list.
 
             From v1.1.0 Pulse can update itself: when a new release is out, the header shows an
             update pill and the Server panel installs it in one click (sha256-verified).
