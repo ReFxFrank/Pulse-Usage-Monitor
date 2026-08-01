@@ -114,16 +114,24 @@ export function useSummary(intervalMs = 10000, sources = null) {
 
 // POST to a Pulse mutation endpoint. The X-Pulse header is required by the
 // server's cross-site guard (it forces a CORS preflight for foreign origins).
-export async function postJson(path) {
-  const r = await fetch(path, { method: 'POST', headers: { 'X-Pulse': '1' } });
-  let body = null;
-  try { body = await r.json(); } catch (_) {}
+// `body` (optional) is sent as JSON. Anything secret — the Meshy API key — MUST
+// travel this way and never as a query parameter: a URL ends up in the server
+// log, the browser history and any referrer header, a request body does not.
+export async function postJson(path, body) {
+  const init = { method: 'POST', headers: { 'X-Pulse': '1' } };
+  if (body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, init);
+  let out = null;
+  try { out = await r.json(); } catch (_) {}
   if (!r.ok) {
-    const err = new Error((body && body.error) || 'HTTP ' + r.status);
+    const err = new Error((out && out.error) || 'HTTP ' + r.status);
     err.status = r.status; // lets callers tell an HTTP failure from a dropped connection
     throw err;
   }
-  return body || {};
+  return out || {};
 }
 
 // Poll /api/logs on the same cadence as the summary.

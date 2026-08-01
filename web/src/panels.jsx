@@ -3,7 +3,7 @@ import { motion, animate } from 'framer-motion';
 import * as Select from '@radix-ui/react-select';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { ProgressRing } from './charts.jsx';
-import { money, money2, tokens, num, pct, dur, durClock, hm, ago, ACCENT, perf, postJson } from './lib.js';
+import { money, money2, tokens, num, pct, dur, durClock, hm, ago, dayLabel, ACCENT, perf, postJson } from './lib.js';
 import { ModelLogo, modelFamily, FAMILY_META } from './logos.jsx';
 
 const EASE = [0.2, 0.7, 0.2, 1];
@@ -532,6 +532,272 @@ export function FastSpendNote({ speed, period }) {
         <span style={{ color: 'var(--text-3)', cursor: 'help' }}>ⓘ</span>
       </InfoTip>
     </div>
+  );
+}
+
+// ---- Meshy · 3D generation credits ----
+// Meshy bills in CREDITS and publishes no credit→dollar rate, so this card is
+// deliberately quarantined from every dollar figure on the page: its own unit
+// chip, its own accent, no "$" anywhere, and nothing here is ever added to
+// spend, plan value or a period cost. Inventing a rate would be exactly the
+// confidently-wrong number Pulse exists to avoid.
+
+// Every task family Meshy documents. Only some have a list endpoint Pulse can
+// confirm; the payload reports which ones actually answered, and anything
+// missing is named out loud rather than quietly rounded to "everything".
+// Mirrors the server's MESHY_FAMILIES probe list; anything the payload reports
+// that isn't here is still shown, it just doesn't affect the "missing" list.
+const MESHY_FAMILIES = [
+  'text-to-3d', 'image-to-3d', 'multi-image-to-3d', 'text-to-texture',
+  'retexture', 'remesh', 'rigging', 'animation',
+];
+const MESHY_TYPE_LABEL = {
+  'text-to-3d': 'Text to 3D',
+  'image-to-3d': 'Image to 3D',
+  'multi-image-to-3d': 'Multi-image to 3D',
+  'text-to-texture': 'Text to texture',
+  retexture: 'Retexture',
+  remesh: 'Remesh',
+  rigging: 'Rigging',
+  animation: 'Animation',
+};
+const meshyTypeLabel = (t) => MESHY_TYPE_LABEL[t] || t;
+
+// Credits are whole-number-ish; never formatted like money.
+function creditsFmt(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  if (!isFinite(n)) return '—';
+  if (Math.abs(n) >= 1000) return Math.round(n).toLocaleString();
+  return (Math.round(n * 10) / 10).toLocaleString();
+}
+
+// Set / replace / remove the Meshy API key. The key is a SECRET: it goes in the
+// POST body, it is wiped from component state the moment it is sent, and the
+// server never echoes it back — the UI only ever learns that one is set.
+export function MeshyKeyForm({ hasKey, onDone, onCancel }) {
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  async function save() {
+    const k = key.trim();
+    if (!k) return;
+    setBusy(true); setErr(null);
+    try {
+      await postJson('/api/meshy/enable', { key: k });
+      setKey(''); // don't keep the secret around any longer than the request
+      onDone && onDone();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  }
+
+  async function remove() {
+    setBusy(true); setErr(null);
+    try {
+      // An empty key clears it server-side; consent stays as it is, so the card
+      // falls back to its setup state instead of vanishing.
+      await postJson('/api/meshy/enable', { key: '' });
+      setKey('');
+      onDone && onDone();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  }
+
+  return (
+    <div className="msh-keyform">
+      <div className="bform">
+        <input
+          className="binput wide"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={hasKey ? 'paste a new Meshy API key' : 'paste your Meshy API key'}
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') save(); }}
+        />
+        <button className="btn albtn" disabled={busy || !key.trim()} onClick={save}>
+          {busy ? 'Saving…' : hasKey ? 'Replace key' : 'Save key'}
+        </button>
+        {hasKey && <button className="btn ghost albtn" disabled={busy} onClick={remove}>Remove key</button>}
+        {onCancel && <button className="btn ghost albtn" disabled={busy} onClick={onCancel}>Cancel</button>}
+      </div>
+      {err && <div className="msh-note bad">Couldn’t save the key: {err}</div>}
+    </div>
+  );
+}
+
+function MeshyHead({ children }) {
+  return (
+    <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      Meshy · 3D generation
+      <span className="msh-unit">credits</span>
+      <InfoTip text="Meshy charges in credits, and there is no published credit-to-dollar rate — so Pulse reports credits as their own unit and never converts them. Nothing on this card is part of your spend, budget or plan value. Read with an opt-in Meshy API key, sent only to api.meshy.ai.">
+        <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
+      </InfoTip>
+      <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8 }}>{children}</span>
+    </h2>
+  );
+}
+
+export function MeshyCard({ meshy, delay = 0.19 }) {
+  const [editing, setEditing] = useState(false);
+  // 'disabled' (and a server that predates the block) means: not opted in.
+  // The card disappears entirely — the Server panel is where you turn it on.
+  if (!meshy || !meshy.enabled || meshy.status === 'disabled') return null;
+
+  // No key yet: an invitation, not an error.
+  if (!meshy.hasKey || meshy.status === 'no-key') {
+    return (
+      <Card delay={delay} hover={false} className="meshycard">
+        <MeshyHead />
+        <div className="msh-invite">
+          Meshy generates 3D assets and bills in <b>credits</b>. Paste an API key and Pulse shows your
+          remaining balance and the credits your generations consumed — kept in its own unit, never
+          converted to dollars and never mixed into your spend.
+        </div>
+        <MeshyKeyForm hasKey={false} />
+        <div className="msh-fine">
+          Create a key in your Meshy account settings. Pulse stores it in <code>~/.pulse/config.json</code>{' '}
+          on this machine, sends it only to <code>api.meshy.ai</code>, and never logs it or puts it in a
+          page, a URL or an export.
+        </div>
+      </Card>
+    );
+  }
+
+  const c = meshy.credits || {};
+  const daily = Array.isArray(meshy.daily) ? meshy.daily : [];
+  const types = Object.entries(meshy.byType || {})
+    .filter(([, v]) => v && ((v.credits || 0) > 0 || (v.tasks || 0) > 0))
+    .sort((a, b) => (b[1].credits || 0) - (a[1].credits || 0));
+  const maxDaily = daily.reduce((m, d) => Math.max(m, d.credits || 0), 0);
+  const maxType = types.reduce((m, t) => Math.max(m, t[1].credits || 0), 0) || 1;
+  const totalTasks = types.reduce((n, t) => n + (t[1].tasks || 0), 0);
+  const hasHistory = maxDaily > 0 || types.length > 0;
+
+  const families = Array.isArray(meshy.families) ? meshy.families : [];
+  const missing = MESHY_FAMILIES.filter((f) => !families.includes(f));
+
+  // A failed or throttled refresh is not data loss: keep the last good numbers
+  // and say plainly how old they are. The server also reports 'stale' before
+  // its very first fetch lands — nothing is wrong then, so that case gets its
+  // own wording instead of an implied failure.
+  const degraded = meshy.status === 'stale' || meshy.status === 'error';
+  const bad = meshy.status === 'error';
+  const firstRead = meshy.status === 'stale' && !meshy.fetchedAt && !meshy.error;
+
+  return (
+    <Card delay={delay} hover={false} className={'meshycard' + (degraded ? ' degraded' : '')}>
+      <MeshyHead>
+        <button className="bedit" title="Replace or remove the stored Meshy API key" onClick={() => setEditing(!editing)}>
+          {editing ? 'close' : 'key'}
+        </button>
+      </MeshyHead>
+
+      {editing && <MeshyKeyForm hasKey onDone={() => setEditing(false)} onCancel={() => setEditing(false)} />}
+
+      <div className="msh-row">
+        <div className="msh-hero">
+          <div className="msh-bal">{creditsFmt(meshy.balance)}</div>
+          <div className="msh-cap">credits left</div>
+        </div>
+        <div className="msh-used">
+          <div className="msh-usedlbl">credits used</div>
+          <div className="msh-stats">
+            <div className="msh-stat"><span>today</span><b>{creditsFmt(c.today)}</b></div>
+            <div className="msh-stat"><span>last 7 days</span><b>{creditsFmt(c.week)}</b></div>
+            <div className="msh-stat"><span>last 30 days</span><b>{creditsFmt(c.month)}</b></div>
+            <div className="msh-stat">
+              <span>
+                tracked total&nbsp;
+                <InfoTip text="Everything in Pulse’s local Meshy cache. Pulse pages back about 30 days the first time it reads your account, so generations older than that are not counted here.">
+                  <span style={{ color: 'var(--text-3)', cursor: 'help' }}>ⓘ</span>
+                </InfoTip>
+              </span>
+              <b>{creditsFmt(c.allTime)}</b>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {hasHistory ? (
+        <>
+          <div className="msh-sechead">
+            <span>Credits per day</span>
+            <em>last {daily.length || 30} days · hover a bar</em>
+          </div>
+          <div className="msh-daily" aria-hidden="true">
+            {daily.map((d) => (
+              <i
+                key={d.date}
+                className={(d.credits || 0) > 0 ? '' : 'zero'}
+                style={{ height: maxDaily > 0 ? Math.max(3, ((d.credits || 0) / maxDaily) * 100) + '%' : '3%' }}
+                title={`${dayLabel(d.date)} — ${creditsFmt(d.credits)} credit${(d.credits || 0) === 1 ? '' : 's'} · ${num(d.tasks || 0)} task${(d.tasks || 0) === 1 ? '' : 's'}`}
+              />
+            ))}
+          </div>
+
+          {types.length > 0 && (
+            <>
+              <div className="msh-sechead">
+                <span>By task type</span>
+                <em>{num(totalTasks)} task{totalTasks === 1 ? '' : 's'} tracked</em>
+              </div>
+              <div className="msh-types">
+                {types.map(([t, v]) => (
+                  <div className="msh-type" key={t}>
+                    <div className="msh-tn">{meshyTypeLabel(t)}</div>
+                    <div className="msh-ttrack">
+                      <i style={{ width: Math.max(2, ((v.credits || 0) / maxType) * 100) + '%' }} />
+                    </div>
+                    <div className="msh-tv">{creditsFmt(v.credits)} <small>· {num(v.tasks || 0)} task{(v.tasks || 0) === 1 ? '' : 's'}</small></div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <div className="sub" style={{ marginTop: 12 }}>
+          {meshy.fetchedAt
+            ? 'No generations in the last 30 days — the balance above is straight from your Meshy account.'
+            : 'Nothing read from your Meshy account yet.'}
+        </div>
+      )}
+
+      {/* Coverage honesty: only the families that actually answered are counted.
+          Before the first read nothing has been probed, so there is nothing
+          honest to say yet — the note waits rather than indicting every family. */}
+      {missing.length > 0 && (families.length > 0 || !!meshy.fetchedAt) && (
+        <div className="msh-fine">
+          Counting {families.length ? <b>{families.join(', ')}</b> : <b>no task family yet</b>}.
+          {' '}Credits spent on <b>{missing.join(', ')}</b> are <b>not</b> included — Meshy exposes no
+          list endpoint Pulse could confirm for {missing.length === 1 ? 'it' : 'those'}, so the balance
+          can fall by more than the usage shown here.
+        </div>
+      )}
+
+      {degraded && (
+        <div className={'msh-note' + (bad ? ' bad' : '')}>
+          {firstRead ? 'Reading your Meshy account now — the numbers above come from Pulse’s local cache until it lands.' : (
+            <>
+              {meshy.fetchedAt
+                ? <>Showing the last good numbers from <span className="mono">{ago(meshy.fetchedAt)}</span> — </>
+                : null}
+              {meshy.error || (bad ? 'the last Meshy refresh failed.' : 'Meshy is not responding; Pulse backs off and retries.')}
+              {bad && ' If the key was revoked, replace it with the “key” button above.'}
+            </>
+          )}
+        </div>
+      )}
+      {!degraded && meshy.fetchedAt && (
+        <div className="msh-fine">
+          Read from your Meshy account <span className="mono">{ago(meshy.fetchedAt)}</span>, at most every 15 minutes.
+        </div>
+      )}
+    </Card>
   );
 }
 

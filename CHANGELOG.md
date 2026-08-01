@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.28.0
+
+- **Meshy.ai support** (opt-in). Meshy has no local log, so this is the first
+  source Pulse reaches over the network with a key **you** give it — modelled
+  on the account meters, not the transcript parsers. It reads your credit
+  balance and pages your generation history (`consumed_credits` per task) into
+  a card showing credits left, credits used today / 7d / 30d, a daily bar row
+  and a by-task-type split.
+  - **Credits stay credits.** They never enter `totals.cost`, any period's
+    spend, or the subscription-value card. There is no credit→dollar rate and
+    Pulse will not invent one — the suite asserts your dollar figures are
+    provably unchanged by Meshy data.
+  - **Your key is treated as a secret.** It is never logged, never in any
+    payload at any depth, never in a URL or query string (it is set via a POST
+    body), and only ever sent to `api.meshy.ai`. The payload exposes
+    `hasKey: true` and nothing more; the test suite greps the whole payload,
+    the server log, and every file under `~/.pulse` except `config.json` to
+    prove it.
+  - Polite by construction: nothing is fetched unless you opt in *and* a key
+    exists; history is cached in `~/.pulse/meshy.json` and paged
+    incrementally, so a refresh stops as soon as it reaches tasks it already
+    has. 401 latches (a bad key is not retried), 429/5xx back off and keep
+    last-good. Only the `text-to-3d` list endpoint is documented by Meshy, so
+    the other task families are probed defensively and the card reports which
+    ones actually answered rather than implying full coverage.
+- **The tray icon is Pulse now.** It used to be a flat coloured circle with a
+  number — no brand anywhere — and when meters were off it fell back to
+  `ExtractAssociatedIcon`, which on the packaged build is **node's** logo, not
+  Pulse's. The icon is now drawn from the real mark
+  (`.github/assets/logo.svg`): the rounded square with the `#8F7FF5 → #B3A5FF`
+  gradient, carrying the white heartbeat stroke when idle, and the 5-hour
+  percentage over a bottom bar **filled to that same percentage** when meters
+  are on. Colour and bar width encode the same value deliberately, so it still
+  reads as a gauge at sizes where two digits don't. It is also painted at 32px
+  instead of 16 — Windows asks for 20/24/32 on scaled displays, and upscaling
+  a 16px source was why the old badge looked chunky on high-DPI screens.
+- **Fixed: the tray icon silently disappeared after any server restart.**
+  `tray: true` is a persisted preference, but the icon was only ever spawned
+  for the `--tray` *flag* — so a restart dropped it while the dashboard toggle
+  and `payload.tray` both kept reporting it as enabled. It now launches from
+  config on boot, exactly as Pulse Strip and the OpenUsage companion already
+  did, with a regression test on both the on and off paths.
+
 ## v1.27.0
 
 - **A real installer.** `PulseSetup.exe` is now the headline Windows download —

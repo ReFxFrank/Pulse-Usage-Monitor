@@ -11,9 +11,18 @@
  * HARD RULE: this tool only ever READS from ~/.claude. It never writes,
  * moves, or deletes anything under that tree.
  *
- * Node >= 18 built-ins only. No dependencies, no telemetry. The ONLY network
- * call Pulse ever makes is an optional GitHub version check (see UPDATES;
- * disable with --no-update-check) — usage data never leaves the machine.
+ * Node >= 18 built-ins only. No dependencies, no telemetry. Usage data never
+ * leaves this machine. NETWORK CALLS, EXHAUSTIVELY — every one of them is
+ * either opt-out or opt-in, and none of them sends anything about you:
+ *   - api.github.com — version check + community-reach counters (PUBLIC repo
+ *     numbers read IN, nothing sent OUT). Opt-out: --no-update-check.
+ *   - api.anthropic.com — Claude account limit meters. Opt-in.
+ *   - chatgpt.com — Codex account token totals. Opt-in.
+ *   - api.meshy.ai — Meshy 3D credit balance + task credit usage. Opt-in
+ *     TWICE (config `meshy: true` AND a stored `meshyApiKey`). The API key is
+ *     the one credential Pulse stores: header-only, never logged, never in a
+ *     payload, never in a URL, sent to no other host.
+ *   - the Discord desktop client's LOCAL socket (opt-in; not the network).
  */
 
 const fs = require('fs');
@@ -25,7 +34,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.27.0';
+const PULSE_VERSION = '1.28.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -2446,6 +2455,12 @@ function buildSummary(sourceFilter, opts) {
   payload.codexMeters = codexMetersFromSnapshot(codexRateSnapshot);
   // Codex account TOKEN totals (all devices) — opt-in, ChatGPT endpoint.
   payload.codexUsage = codexUsageForPayload(background);
+  // Meshy 3D credits — opt-in, api.meshy.ai, API-key authenticated. CREDITS
+  // ARE NOT DOLLARS: this block is deliberately self-contained and is never
+  // folded into totals/periods/planValue/budget, because Meshy publishes no
+  // credit→dollar rate. Account-level like the meters, so it is NOT rescoped
+  // by ?sources= — it has no per-source detail to filter.
+  payload.meshy = meshyForPayload(background);
   // Limit alerts: which windows are at/above a warning threshold right now.
   // Stateless — the dashboard de-dups notifications per reset cycle client-side.
   payload.alerts = computeAlerts(payload.meters, payload.codexMeters);
@@ -3534,6 +3549,487 @@ function codexUsageForPayload(background) {
 }
 
 // ---------------------------------------------------------------------------
+// MESHY 3D CREDITS (opt-in, API-key authenticated)
+//
+// Meshy generates 3D assets and is the first source Pulse reads that has NO
+// local log — there is nothing on disk to parse, so this is an authenticated
+// API integration modelled on the account meters above, NOT on the transcript
+// parsers. Two consents are required before a single byte leaves the machine:
+// `meshy: true` in ~/.pulse/config.json AND a stored `meshyApiKey`.
+//
+// CREDITS ARE THEIR OWN UNIT. Meshy bills in credits and publishes no
+// credit→dollar rate, so credits NEVER enter totals.cost, any period cost,
+// planValue, or any other dollar figure in the payload. Inventing a rate would
+// produce exactly the kind of confidently-wrong number this project exists to
+// remove. payload.meshy is a self-contained block with its own unit.
+//
+// THE KEY IS A SECRET, AND IT IS THE FIRST CREDENTIAL PULSE STORES (every
+// other one is read read-only from a file some other tool wrote). Therefore:
+// never logged (not even truncated), never in a payload (`hasKey` is a
+// boolean), never in a URL or query string (it travels in an Authorization
+// header, and is SET through a POST body for the same reason), and sent to no
+// host but Meshy's. fetchUrl deliberately drops custom headers when it
+// follows a redirect, so a redirected request can never carry the key
+// somewhere else.
+//
+// Fetching is deliberately gentle — this is a shared third-party API. One
+// refresh every ~15 minutes at most; task pages are persisted to
+// ~/.pulse/meshy.json so a restart doesn't re-page the world; paging stops as
+// soon as it reaches tasks already known or older than the window; 401 stops
+// retrying until the configured key changes; 429/5xx back off and keep the
+// last-good numbers on screen.
+// ---------------------------------------------------------------------------
+const MESHY_API_BASE = String(process.env.PULSE_MESHY_API || 'https://api.meshy.ai').replace(/\/+$/, '');
+// Explicit 0 is honored (timing-sensitive suites disable the cache) — hence
+// the isFinite check rather than the usual `|| default`.
+const MESHY_OK_MS = (() => {
+  const v = parseInt(process.env.PULSE_MESHY_CACHE_MS, 10);
+  return isFinite(v) && v >= 0 ? v : 15 * 60 * 1000;
+})();
+const MESHY_ERR_MS = Math.min(Math.max(MESHY_OK_MS, 60 * 1000) * 2, 30 * 60 * 1000);
+const MESHY_429_MAX_MS = 60 * 60 * 1000;
+const MESHY_PAGE_SIZE = 50;   // the API maximum
+const MESHY_MAX_PAGES = 6;    // per family per refresh — a hard ceiling on politeness
+const MESHY_WINDOW_DAYS = 30; // what `daily` / `month` report
+const MESHY_RETAIN_DAYS = 45; // what the sidecar keeps (slack so the window is always full)
+
+// Task families. ONLY text-to-3d is confirmed against the published docs; the
+// rest are probed defensively — a 404/405/anything on an unconfirmed family is
+// skipped silently and must never fail the refresh. `families` in the payload
+// reports which ones actually answered, so the UI can be honest about coverage
+// instead of implying a total it cannot see.
+const MESHY_FAMILIES = [
+  { type: 'text-to-3d', path: '/openapi/v2/text-to-3d', confirmed: true },
+  { type: 'image-to-3d', path: '/openapi/v1/image-to-3d' },
+  { type: 'multi-image-to-3d', path: '/openapi/v1/multi-image-to-3d' },
+  { type: 'text-to-texture', path: '/openapi/v1/text-to-texture' },
+  { type: 'retexture', path: '/openapi/v1/retexture' },
+  { type: 'remesh', path: '/openapi/v1/remesh' },
+  { type: 'rigging', path: '/openapi/v1/rigging' },
+  { type: 'animation', path: '/openapi/v1/animation' },
+];
+
+const meshyState = {
+  status: 'idle',    // idle | ok | stale | error | no-key | disabled
+  balance: null,     // credits remaining — kept through errors (last good)
+  families: [],      // families that answered on the last successful refresh
+  fetchedAt: null,   // when the DATA being served was fetched (last GOOD fetch)
+  nextAttemptAt: 0,
+  error: null,
+  badKeyHash: null,  // fingerprint of the key the API rejected — NEVER the key
+};
+let meshyInFlight = false;
+let meshy429Streak = 0;
+
+function meshyEnabled() { return readConfig().meshy === true; }
+
+// The configured key, if any (presence only — used for `hasKey`).
+function meshyConfiguredKey() {
+  const k = readConfig().meshyApiKey;
+  return typeof k === 'string' && k.trim() ? k.trim() : null;
+}
+// The key in usable form. It goes straight into an Authorization header, so
+// anything with header-invalid characters (a paste that dragged in a newline)
+// is rejected here rather than allowed to throw inside http.get.
+function meshyApiKey() {
+  const k = meshyConfiguredKey();
+  return k && HEADER_SAFE.test(k) ? k : null;
+}
+// Identity of a key WITHOUT the key: lets the 401 latch tell "same bad key
+// still configured" from "user changed it" without ever holding the secret in
+// a comparable field that could be logged or serialized by accident.
+function meshyKeyHash(key) {
+  try { return crypto.createHash('sha256').update(String(key)).digest('hex').slice(0, 16); }
+  catch (_) { return null; }
+}
+
+// ~/.pulse/meshy.json — the incremental task cache. Meshy tasks are immutable
+// once finished, so remembering them means a restart re-reads one page per
+// family instead of the whole account history.
+function meshyStorePath() { return path.join(pulseHome(), 'meshy.json'); }
+function emptyMeshyStore() {
+  return { version: 1, tasks: {}, pruned: { credits: 0, tasks: 0, byType: {} } };
+}
+let meshyStore = null;
+function readMeshyStore() {
+  if (meshyStore) return meshyStore;
+  let j = null;
+  try { j = JSON.parse(fs.readFileSync(meshyStorePath(), 'utf8')); } catch (_) { /* first run */ }
+  const store = emptyMeshyStore();
+  if (j && typeof j === 'object') {
+    if (j.tasks && typeof j.tasks === 'object') {
+      for (const id of Object.keys(j.tasks)) {
+        const t = j.tasks[id];
+        if (!t || typeof t !== 'object') continue;
+        if (typeof t.ts !== 'number' || !isFinite(t.ts)) continue;
+        store.tasks[id] = {
+          t: typeof t.t === 'string' && t.t ? t.t : 'unknown',
+          c: typeof t.c === 'number' && isFinite(t.c) ? t.c : 0,
+          ts: t.ts,
+          s: typeof t.s === 'string' ? t.s : '',
+        };
+      }
+    }
+    const p = j.pruned;
+    if (p && typeof p === 'object') {
+      if (typeof p.credits === 'number' && isFinite(p.credits)) store.pruned.credits = p.credits;
+      if (typeof p.tasks === 'number' && isFinite(p.tasks)) store.pruned.tasks = p.tasks;
+      if (p.byType && typeof p.byType === 'object') {
+        for (const k of Object.keys(p.byType)) {
+          const b = p.byType[k];
+          if (!b || typeof b !== 'object') continue;
+          store.pruned.byType[k] = {
+            credits: typeof b.credits === 'number' && isFinite(b.credits) ? b.credits : 0,
+            tasks: typeof b.tasks === 'number' && isFinite(b.tasks) ? b.tasks : 0,
+          };
+        }
+      }
+    }
+  }
+  meshyStore = store;
+  return meshyStore;
+}
+function writeMeshyStore(store) {
+  try {
+    fs.mkdirSync(pulseHome(), { recursive: true });
+    fs.writeFileSync(meshyStorePath(), JSON.stringify(store));
+  } catch (e) {
+    // ~/.pulse unwritable → Pulse just re-pages next start. Never fatal.
+    console.warn('[pulse] meshy: could not write task cache: ' + e.message);
+  }
+}
+
+// Drop detail older than the retention window. The task's credits are folded
+// into the `pruned` accumulators FIRST, so `allTime` never shrinks merely
+// because Pulse stopped keeping the per-task detail.
+function pruneMeshyStore(store, now) {
+  const cutoff = now - MESHY_RETAIN_DAYS * 86400000;
+  for (const id of Object.keys(store.tasks)) {
+    const t = store.tasks[id];
+    if (t && t.ts >= cutoff) continue;
+    if (t) {
+      const c = typeof t.c === 'number' && isFinite(t.c) ? t.c : 0;
+      store.pruned.credits += c;
+      store.pruned.tasks += 1;
+      const b = store.pruned.byType[t.t] || (store.pruned.byType[t.t] = { credits: 0, tasks: 0 });
+      b.credits += c;
+      b.tasks += 1;
+    }
+    delete store.tasks[id];
+  }
+}
+
+// Meshy timestamps are documented as epoch MILLISECONDS. Tolerate a seconds
+// stamp and an ISO string anyway — a misread timestamp silently moves credits
+// into the wrong day.
+function meshyTs(v) {
+  if (typeof v === 'number' && isFinite(v)) return v < 1e12 ? v * 1000 : v;
+  if (typeof v === 'string' && v) { const t = Date.parse(v); if (isFinite(t)) return t; }
+  return null;
+}
+
+// A list response, whatever envelope it arrives in. The confirmed endpoint
+// returns a bare array; the unconfirmed families are probed, so accept the
+// common wrappers rather than mis-reporting a real answer as "no such family".
+function meshyTaskList(body) {
+  let j = null;
+  try { j = JSON.parse(body); } catch (_) { return null; }
+  if (Array.isArray(j)) return j;
+  if (j && typeof j === 'object') {
+    for (const k of ['result', 'data', 'tasks', 'items']) {
+      if (Array.isArray(j[k])) return j[k];
+    }
+  }
+  return null;
+}
+
+// Roll the stored tasks into the payload shape. Day bucketing uses
+// localDateStr / localDayStartsBack — the same helpers every other Pulse
+// period uses — so a Meshy day lines up exactly with a Pulse day.
+function meshyAggregate(store, now) {
+  const days = localDayStartsBack(now, MESHY_WINDOW_DAYS);
+  const idx = new Map();
+  days.forEach((d, i) => idx.set(d, i));
+  const daily = days.map((date) => ({ date, credits: 0, tasks: 0 }));
+  const todayStr = days[days.length - 1];
+  const weekSet = new Set(days.slice(-7));
+  const byType = {};
+  let today = 0, week = 0, month = 0;
+  // allTime starts from the pruned accumulator so it survives retention.
+  let allTime = store.pruned.credits || 0;
+  for (const id of Object.keys(store.tasks)) {
+    const t = store.tasks[id];
+    const c = typeof t.c === 'number' && isFinite(t.c) ? t.c : 0;
+    allTime += c;
+    const b = byType[t.t] || (byType[t.t] = { credits: 0, tasks: 0 });
+    b.credits += c;
+    b.tasks += 1;
+    const ds = localDateStr(t.ts);
+    const i = idx.get(ds);
+    if (i === undefined) continue; // outside the reported window
+    daily[i].credits += c;
+    daily[i].tasks += 1;
+    // `month` is the trailing 30 local days — the SAME window `daily` covers,
+    // so the chart always sums to the headline figure.
+    month += c;
+    if (weekSet.has(ds)) week += c;
+    if (ds === todayStr) today += c;
+  }
+  // byType is all-time, matching `allTime`, so it folds in the pruned totals.
+  for (const k of Object.keys(store.pruned.byType || {})) {
+    const p = store.pruned.byType[k];
+    const b = byType[k] || (byType[k] = { credits: 0, tasks: 0 });
+    b.credits += p.credits || 0;
+    b.tasks += p.tasks || 0;
+  }
+  // Credits are usually whole numbers; round anyway so a fractional plan can
+  // never surface float noise like 0.30000000000000004.
+  const r = (n) => Math.round(n * 1000) / 1000;
+  for (const k of Object.keys(byType)) byType[k].credits = r(byType[k].credits);
+  for (const d of daily) d.credits = r(d.credits);
+  return {
+    credits: { today: r(today), week: r(week), month: r(month), allTime: r(allTime) },
+    byType,
+    daily,
+  };
+}
+
+// One authenticated GET. The key rides in a header — NEVER a query string,
+// which would land in URLs, logs and Referer headers.
+function meshyFetch(pathname, key, cb) {
+  fetchUrl(MESHY_API_BASE + pathname, {
+    timeoutMs: 10000,
+    headers: { 'Authorization': 'Bearer ' + key, 'Accept': 'application/json' },
+  }, cb);
+}
+
+// Retry-After (seconds or HTTP-date), else exponential backoff — same shape as
+// the meters code, which is the established polite-citizen pattern here.
+function meshyBackoffMs(err, streak) {
+  let waitMs = null;
+  const ra = err && err.retryAfter;
+  if (ra != null) {
+    const sec = parseInt(ra, 10);
+    if (isFinite(sec) && sec > 0) waitMs = sec * 1000;
+    else { const t = Date.parse(ra); if (isFinite(t)) waitMs = t - Date.now(); }
+  }
+  if (waitMs == null || !isFinite(waitMs) || waitMs <= 0) {
+    waitMs = Math.min(Math.max(MESHY_OK_MS, 60 * 1000) * Math.pow(2, Math.max(0, streak - 1)), MESHY_429_MAX_MS);
+  }
+  return Math.max(5000, Math.min(waitMs, MESHY_429_MAX_MS));
+}
+
+function refreshMeshy(done) {
+  const finish = (st) => { done && done(st); };
+  if (!meshyEnabled()) { meshyState.status = 'disabled'; return finish(meshyState); }
+  const key = meshyApiKey();
+  if (!key) {
+    meshyState.status = 'no-key';
+    meshyState.error = meshyConfiguredKey()
+      ? 'The stored Meshy API key has characters that cannot go in an HTTP header — re-paste it.'
+      : 'No Meshy API key stored — add one from the dashboard (or set "meshyApiKey" in ~/.pulse/config.json).';
+    return finish(meshyState);
+  }
+  const keyHash = meshyKeyHash(key);
+  if (meshyState.badKeyHash) {
+    // A 401 means the key is wrong, not that the network hiccuped. Retrying on
+    // a timer would hammer someone else's API forever, so the latch only opens
+    // when the CONFIGURED key actually changes.
+    if (meshyState.badKeyHash === keyHash) return finish(meshyState);
+    meshyState.badKeyHash = null;
+    meshyState.error = null;
+  }
+  if (meshyInFlight) return finish(meshyState);
+  meshyInFlight = true;
+  const schedule = (ms) => { meshyState.nextAttemptAt = Date.now() + ms; };
+  const startedAt = Date.now();
+  const cutoffMs = startedAt - MESHY_RETAIN_DAYS * 86400000;
+  const store = readMeshyStore();
+  const families = [];
+  let added = 0, updated = 0;
+  let throttled = null;
+
+  const fail = (status, message, backoffMs) => {
+    meshyInFlight = false;
+    schedule(backoffMs);
+    // Keep the last-good balance and the stored tasks on screen: being
+    // throttled or offline is not data loss. Only a never-succeeded state is
+    // a hard 'error'.
+    meshyState.status = status;
+    meshyState.error = message;
+    console.warn('[pulse] meshy: ' + message);
+    return finish(meshyState);
+  };
+  const softStatus = () => (meshyState.fetchedAt ? 'stale' : 'error');
+
+  // 1) Balance — the confirmed endpoint, and the auth canary. If this fails
+  //    there is no point probing eight list endpoints behind the same key.
+  meshyFetch('/openapi/v1/balance', key, (err, body) => {
+    if (!meshyEnabled()) { // disabled mid-flight: don't resurrect cleared state
+      meshyInFlight = false;
+      meshyState.status = 'disabled';
+      return finish(meshyState);
+    }
+    if (err) {
+      if (err.status === 401 || err.status === 403) {
+        meshyState.badKeyHash = keyHash;
+        meshyInFlight = false;
+        schedule(MESHY_ERR_MS);
+        meshyState.status = 'error';
+        meshyState.error = 'Meshy rejected the API key (' + err.message + ') — check the key in the ' +
+          'dashboard or ~/.pulse/config.json. Pulse will not retry until it changes.';
+        console.warn('[pulse] meshy: ' + meshyState.error);
+        return finish(meshyState);
+      }
+      if (err.status === 429) {
+        meshy429Streak++;
+        const waitMs = meshyBackoffMs(err, meshy429Streak);
+        return fail(softStatus(), 'Meshy rate-limited the usage check (HTTP 429) — retrying in ~' +
+          Math.max(1, Math.round(waitMs / 60000)) + 'm.', waitMs);
+      }
+      return fail(softStatus(), 'meshy balance fetch failed: ' + err.message, MESHY_ERR_MS);
+    }
+    meshy429Streak = 0;
+    let balance = null;
+    try {
+      const j = JSON.parse(body);
+      if (j && typeof j.balance === 'number' && isFinite(j.balance)) balance = j.balance;
+    } catch (_) { /* handled below */ }
+    if (balance == null) {
+      return fail(softStatus(), 'unexpected meshy balance response', MESHY_ERR_MS);
+    }
+
+    // 2) Task families, SEQUENTIALLY (never eight parallel requests at a
+    //    third-party API), each paged only as far as it needs to be.
+    const walkFamily = (fi) => {
+      if (throttled || fi >= MESHY_FAMILIES.length) return finishRefresh();
+      const fam = MESHY_FAMILIES[fi];
+      let answered = false;
+      const page = (pageNum) => {
+        if (pageNum > MESHY_MAX_PAGES) return walkFamily(fi + 1);
+        const q = '?page_num=' + pageNum + '&page_size=' + MESHY_PAGE_SIZE + '&sort_by=-created_at';
+        meshyFetch(fam.path + q, key, (err2, body2) => {
+          if (err2) {
+            if (err2.status === 429) { throttled = err2; return finishRefresh(); }
+            // Anything else on an UNCONFIRMED family (404/405/500/parse) just
+            // means this account or API version has no such list endpoint.
+            // Skip it silently — one missing family must never fail the run.
+            return walkFamily(fi + 1);
+          }
+          const list = meshyTaskList(body2);
+          if (!Array.isArray(list)) return walkFamily(fi + 1);
+          if (!answered) { answered = true; families.push(fam.type); }
+          let changed = 0, reachedOld = false;
+          for (const raw of list) {
+            if (!raw || typeof raw !== 'object') continue;
+            const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+            if (!id) continue;
+            const ts = meshyTs(raw.created_at);
+            if (ts == null) continue;
+            // Sorted newest-first, so an old task means the rest of this
+            // family is older still.
+            if (ts < cutoffMs) { reachedOld = true; continue; }
+            const credits = typeof raw.consumed_credits === 'number' && isFinite(raw.consumed_credits)
+              ? raw.consumed_credits : 0;
+            // Prefer the task's OWN type when it reports one — a family
+            // endpoint can return more than one task type.
+            const type = typeof raw.type === 'string' && raw.type ? raw.type.toLowerCase() : fam.type;
+            const status = typeof raw.status === 'string' ? raw.status : '';
+            const prev = store.tasks[id];
+            // Already known AND unchanged → nothing to record. (A running task
+            // whose credits or status moved still counts as changed, so an
+            // in-progress task is not frozen at its first-seen value.)
+            if (prev && prev.c === credits && prev.s === status && prev.t === type) continue;
+            store.tasks[id] = { t: type, c: credits, ts, s: status };
+            if (prev) updated++; else added++;
+            changed++;
+          }
+          // Stop paging this family when the page told us nothing new, when it
+          // ran past the retention window, or when it was the last page.
+          if (changed === 0 || reachedOld || list.length < MESHY_PAGE_SIZE) return walkFamily(fi + 1);
+          page(pageNum + 1);
+        });
+      };
+      page(1);
+    };
+
+    const finishRefresh = () => {
+      meshyInFlight = false;
+      if (!meshyEnabled()) { meshyState.status = 'disabled'; return finish(meshyState); }
+      pruneMeshyStore(store, Date.now());
+      writeMeshyStore(store);
+      meshyState.balance = balance;
+      if (throttled) {
+        // A throttled walk stopped early, so `families` is a partial list —
+        // publishing it would understate coverage. Keep the last complete one.
+        meshy429Streak++;
+        const waitMs = meshyBackoffMs(throttled, meshy429Streak);
+        schedule(waitMs);
+        // Partial data was still merged and the balance is fresh — 'stale'
+        // says "some of this may be behind", which is the honest word.
+        meshyState.status = 'stale';
+        meshyState.error = 'Meshy rate-limited the task listing (HTTP 429) — retrying in ~' +
+          Math.max(1, Math.round(waitMs / 60000)) + 'm.';
+        console.warn('[pulse] meshy: ' + meshyState.error);
+        return finish(meshyState);
+      }
+      // A complete walk: report exactly what answered THIS time, even if that
+      // is nothing — a stale coverage list would imply totals Pulse can't see.
+      meshyState.families = families;
+      schedule(MESHY_OK_MS);
+      meshyState.status = 'ok';
+      meshyState.fetchedAt = Date.now();
+      meshyState.error = families.length ? null : 'no Meshy task endpoints answered — credits shown are balance only';
+      // NOTE: nothing here logs the key, the balance aside. Task prompts are
+      // never stored or logged either.
+      console.log('[pulse] meshy refreshed (' + balance + ' credits left, ' +
+        families.length + ' family/families, +' + added + ' new / ' + updated + ' updated task(s), ' +
+        (Date.now() - startedAt) + 'ms)');
+      return finish(meshyState);
+    };
+
+    walkFamily(0);
+  });
+}
+
+// Lazily refresh on summary builds and serve the cached aggregate immediately —
+// same trickle discipline as the meters: a status line / Discord build only
+// pokes Meshy when the numbers are already well out of date.
+function meshyForPayload(background) {
+  const enabled = meshyEnabled();
+  const hasKey = !!meshyConfiguredKey();
+  const blank = () => ({ credits: { today: 0, week: 0, month: 0, allTime: 0 }, byType: {}, daily: [] });
+  if (!enabled) {
+    // No consent → nothing fetched, nothing read, nothing reported.
+    return { enabled: false, hasKey, status: 'disabled', balance: null, ...blank(), families: [], fetchedAt: null, error: null };
+  }
+  if (!hasKey) {
+    return {
+      enabled: true, hasKey: false, status: 'no-key', balance: null, ...blank(), families: [], fetchedAt: null,
+      error: 'No Meshy API key stored — add one from the dashboard (or set "meshyApiKey" in ~/.pulse/config.json).',
+    };
+  }
+  const due = Date.now() >= (meshyState.nextAttemptAt || 0);
+  const bgOk = !background || (Date.now() - (meshyState.fetchedAt || 0) >= BACKGROUND_METERS_MS);
+  if (due && bgOk) refreshMeshy(); // async; the next poll picks it up
+  const agg = meshyAggregate(readMeshyStore(), Date.now());
+  return {
+    enabled: true,
+    hasKey: true, // the boolean is the ONLY thing about the key that ever ships
+    // 'idle' means the first fetch hasn't landed yet: the stored numbers are
+    // real but unconfirmed, which is exactly what 'stale' says.
+    status: meshyState.status === 'idle' || meshyState.status === 'disabled' ? 'stale' : meshyState.status,
+    balance: meshyState.balance,
+    credits: agg.credits,
+    byType: agg.byType,
+    daily: agg.daily,
+    families: (meshyState.families || []).slice(),
+    fetchedAt: meshyState.fetchedAt,
+    error: meshyState.error,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // DISCORD RICH PRESENCE (opt-in, off by default)
 // Talks the Discord desktop client's local IPC protocol directly — a named
 // pipe on Windows, a Unix socket elsewhere; 8-byte header (op + length,
@@ -4073,6 +4569,37 @@ function allowRead(req, res, boundLoopback) {
   return false;
 }
 
+// Read a small JSON request body. Pulse's mutation routes are otherwise all
+// query-string driven; this exists for exactly one reason — a SECRET (the
+// Meshy API key) must not travel in a URL, where it would land in server logs,
+// browser history and Referer headers. Size-capped, and every failure path
+// answers the callback exactly once.
+function readJsonBody(req, limitBytes, cb) {
+  cb = once(cb);
+  let body = '';
+  let overflowed = false;
+  req.setEncoding('utf8');
+  req.on('data', (d) => {
+    if (overflowed) return;
+    body += d;
+    if (body.length > limitBytes) {
+      overflowed = true;
+      body = ''; // don't keep a partial secret around any longer than needed
+      req.destroy();
+      cb(new Error('request body too large'));
+    }
+  });
+  req.on('end', () => {
+    if (overflowed) return;
+    if (!body.trim()) return cb(null, {}); // empty body is a valid "no fields"
+    let j;
+    try { j = JSON.parse(body); } catch (e) { return cb(new Error('invalid JSON body')); }
+    cb(null, j && typeof j === 'object' ? j : {});
+  });
+  req.on('error', (e) => cb(e));
+  req.on('aborted', () => cb(new Error('request aborted')));
+}
+
 // Probe whether a running instance answers /api/health on the port.
 // cb receives { kind: 'pulse', version } | { kind: 'other' } | { kind: 'free' }.
 function probeInstance(port, cb) {
@@ -4165,33 +4692,92 @@ function trayScript(port) {
     "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class PulseIconUtil{[DllImport(\"user32.dll\")]public static extern bool DestroyIcon(IntPtr h);}'",
     "$base = 'http://127.0.0.1:" + port + "'",
     '$ni = New-Object System.Windows.Forms.NotifyIcon',
-    'try {',
-    '  $exe = (Get-Process -Id ' + process.pid + ' -ErrorAction Stop).Path',
-    '  $baseIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)',
-    '} catch { $baseIcon = [System.Drawing.SystemIcons]::Application }',
+    // ---- Pulse's brand mark, drawn (see .github/assets/logo.svg) ----------
+    // Everything is painted at 32px, not the tray's nominal 16: Windows asks
+    // for 20/24/32 on scaled displays, and a 16px source upscaled to 24 is the
+    // mush the old ExtractAssociatedIcon path produced. Drawing our own also
+    // means the idle icon is PULSE — the packaged exe carries node's icon, so
+    // ExtractAssociatedIcon was showing node's logo in the user's tray.
+    "$PULSE_A = [System.Drawing.ColorTranslator]::FromHtml('#8F7FF5')",
+    "$PULSE_B = [System.Drawing.ColorTranslator]::FromHtml('#B3A5FF')",
+    '$ICO = 32',
+    'function New-PulseRounded([int]$size, [int]$r) {',
+    '  $p = New-Object System.Drawing.Drawing2D.GraphicsPath',
+    '  $d = $r * 2',
+    '  $p.AddArc(0, 0, $d, $d, 180, 90)',
+    '  $p.AddArc($size - $d, 0, $d, $d, 270, 90)',
+    '  $p.AddArc($size - $d, $size - $d, $d, $d, 0, 90)',
+    '  $p.AddArc(0, $size - $d, $d, $d, 90, 90)',
+    '  $p.CloseFigure()',
+    '  return $p',
+    '}',
+    // Shared canvas setup: the rounded gradient square every variant sits on.
+    'function New-PulseCanvas {',
+    '  $bmp = New-Object System.Drawing.Bitmap -ArgumentList $ICO, $ICO',
+    '  $g = [System.Drawing.Graphics]::FromImage($bmp)',
+    "  $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'AntiAlias'",
+    '  $g.Clear([System.Drawing.Color]::Transparent)',
+    '  $path = New-PulseRounded $ICO ([int]($ICO * 0.25))',
+    '  $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush(',
+    '    (New-Object System.Drawing.Point -ArgumentList 0, 0),',
+    '    (New-Object System.Drawing.Point -ArgumentList $ICO, $ICO), $PULSE_A, $PULSE_B)',
+    '  $g.FillPath($grad, $path)',
+    '  $grad.Dispose()',
+    '  return @{ bmp = $bmp; g = $g; path = $path }',
+    '}',
+    'function ConvertTo-PulseIcon($bmp) {',
+    '  $h = $bmp.GetHicon()',
+    '  $icon = [System.Drawing.Icon]::FromHandle($h).Clone()',
+    '  [void][PulseIconUtil]::DestroyIcon($h)',
+    '  $bmp.Dispose()',
+    '  return $icon',
+    '}',
+    // Idle / meters-off: the logo's heartbeat stroke, so the tray still says
+    // "Pulse" rather than falling back to a generic application icon.
+    'function New-PulseMark {',
+    '  $c = New-PulseCanvas',
+    '  $k = $ICO / 96.0',
+    '  $pen = New-Object System.Drawing.Pen -ArgumentList ([System.Drawing.Color]::White), ([float](7 * $k))',
+    "  $pen.StartCap = 'Round'; $pen.EndCap = 'Round'; $pen.LineJoin = 'Round'",
+    '  $pts = @()',
+    '  foreach ($p in @(@(16,48), @(30,48), @(37,27), @(51,76), @(58,48), @(80,48))) {',
+    '    $pts += New-Object System.Drawing.PointF -ArgumentList ([float]($p[0] * $k)), ([float]($p[1] * $k))',
+    '  }',
+    '  $c.g.DrawLines($pen, [System.Drawing.PointF[]]$pts)',
+    '  $pen.Dispose(); $c.g.Dispose(); $c.path.Dispose()',
+    '  return (ConvertTo-PulseIcon $c.bmp)',
+    '}',
+    '$baseIcon = New-PulseMark',
     '$script:curIcon = $baseIcon',
     '$ni.Icon = $baseIcon',
     "$ni.Text = 'Pulse'",
     '$ni.Visible = $true',
     // Live badge: the Claude 5h used-% painted on the icon, colored by level —
     // the number is readable at a glance without hovering.
-    'function New-PulseBadge([string]$txt, [string]$hex) {',
-    '  $bmp = New-Object System.Drawing.Bitmap -ArgumentList 16, 16',
-    '  $g = [System.Drawing.Graphics]::FromImage($bmp)',
-    "  $g.SmoothingMode = 'AntiAlias'",
-    '  $bg = New-Object System.Drawing.SolidBrush -ArgumentList ([System.Drawing.ColorTranslator]::FromHtml($hex))',
-    '  $g.FillEllipse($bg, 0, 0, 15, 15)',
-    "  $f = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 6.5, ([System.Drawing.FontStyle]::Bold)",
+    // The brand square keeps the identity; the number gives the exact figure;
+    // the bottom bar is FILLED to the same percentage, so the icon still reads
+    // as a gauge at 16px where two digits are barely legible. Colour and width
+    // encode the same thing on purpose — whichever one survives the scaling,
+    // the user still learns how much of the window is gone.
+    'function New-PulseBadge([string]$txt, [string]$hex, [double]$pct) {',
+    '  $c = New-PulseCanvas',
+    '  $bh = [float]($ICO * 0.26)',
+    '  $c.g.SetClip($c.path)',
+    '  $track = New-Object System.Drawing.SolidBrush -ArgumentList ([System.Drawing.Color]::FromArgb(90, 0, 0, 0))',
+    '  $c.g.FillRectangle($track, 0, ($ICO - $bh), $ICO, $bh)',
+    '  $track.Dispose()',
+    '  $fill = New-Object System.Drawing.SolidBrush -ArgumentList ([System.Drawing.ColorTranslator]::FromHtml($hex))',
+    '  $w = [float]($ICO * [Math]::Max(0.0, [Math]::Min(1.0, $pct / 100.0)))',
+    '  if ($w -gt 0) { $c.g.FillRectangle($fill, 0, ($ICO - $bh), $w, $bh) }',
+    '  $fill.Dispose(); $c.g.ResetClip()',
+    '  $fs = if ($txt.Length -ge 3) { $ICO * 0.44 } elseif ($txt.Length -eq 2) { $ICO * 0.56 } else { $ICO * 0.62 }',
+    "  $f = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', $fs, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)",
     '  $sf = New-Object System.Drawing.StringFormat',
     "  $sf.Alignment = 'Center'; $sf.LineAlignment = 'Center'",
-    '  $rect = New-Object System.Drawing.RectangleF -ArgumentList 0, 0.5, 16, 15',
-    '  $g.DrawString($txt, $f, [System.Drawing.Brushes]::White, $rect, $sf)',
-    '  $g.Dispose(); $bg.Dispose(); $f.Dispose()',
-    '  $h = $bmp.GetHicon()',
-    '  $icon = [System.Drawing.Icon]::FromHandle($h).Clone()',
-    '  [void][PulseIconUtil]::DestroyIcon($h)',
-    '  $bmp.Dispose()',
-    '  return $icon',
+    '  $rect = New-Object System.Drawing.RectangleF -ArgumentList 0, (-$ICO * 0.12), $ICO, $ICO',
+    '  $c.g.DrawString($txt, $f, [System.Drawing.Brushes]::White, $rect, $sf)',
+    '  $f.Dispose(); $c.g.Dispose(); $c.path.Dispose()',
+    '  return (ConvertTo-PulseIcon $c.bmp)',
     '}',
     'function Set-PulseIcon($icon) {',
     '  $old = $script:curIcon',
@@ -4236,7 +4822,7 @@ function trayScript(port) {
     '      $p = [int]$m.claudeFiveHour',
     "      $txt = if ($p -ge 100) { '!' } else { [string]$p }",
     "      $hex = if ($p -ge 85) { '#f27878' } elseif ($p -ge 60) { '#e0a132' } else { '#22b892' }",
-    '      Set-PulseIcon (New-PulseBadge $txt $hex)',
+    '      Set-PulseIcon (New-PulseBadge $txt $hex $p)',
     '    } else { Set-PulseIcon $baseIcon }',
     '    $script:fails = 0',
     '  } catch {',
@@ -4744,6 +5330,71 @@ function startServer(port, host, opts) {
         res.end(JSON.stringify({ ok: true, strip: { supported: process.platform === 'win32', enabled: on, path: findPulseStrip() } }));
         return;
       }
+      if (route === '/api/meshy/enable' || route === '/api/meshy/disable') {
+        if (!allowMutation(req, res)) return;
+        const on = route.endsWith('enable');
+        if (!on) {
+          writeConfig({ meshy: false });
+          // Consent withdrawn: stop fetching and clear the live numbers. The
+          // stored key is left alone (re-enabling shouldn't demand a re-paste)
+          // — clearing it is an explicit enable with an empty key. The task
+          // cache in ~/.pulse/meshy.json also stays: it is the user's own
+          // local history, and keeping it means re-enabling doesn't re-page
+          // the whole account.
+          meshyState.status = 'disabled';
+          meshyState.balance = null;
+          meshyState.families = [];
+          meshyState.fetchedAt = null;
+          meshyState.nextAttemptAt = 0;
+          meshyState.error = null;
+          console.log('[pulse] meshy credits disabled from the dashboard');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, meshy: meshyForPayload() }));
+          return;
+        }
+        // The key arrives in the POST BODY, never a query string — see
+        // readJsonBody. 8 KB is far more than any API key needs.
+        readJsonBody(req, 8192, (bodyErr, body) => {
+          if (bodyErr) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: bodyErr.message }));
+            return;
+          }
+          const patch = { meshy: true };
+          if (body && Object.prototype.hasOwnProperty.call(body, 'key')) {
+            const raw = typeof body.key === 'string' ? body.key.trim() : '';
+            if (raw && !HEADER_SAFE.test(raw)) {
+              // Rejected without ever echoing the value back.
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'api key contains characters that cannot go in an HTTP header' }));
+              return;
+            }
+            if (raw.length > 512) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'api key is implausibly long' }));
+              return;
+            }
+            // An empty key CLEARS the stored key (documented behaviour).
+            patch.meshyApiKey = raw || null;
+          }
+          writeConfig(patch);
+          // Deliberately logs the ACT, never the key or any part of it.
+          console.log('[pulse] meshy credits enabled from the dashboard' +
+            (Object.prototype.hasOwnProperty.call(patch, 'meshyApiKey')
+              ? (patch.meshyApiKey ? ' (api key set)' : ' (api key cleared)') : ''));
+          // A new key deserves a fresh attempt: drop the 401 latch and any
+          // backoff so the card can render immediately.
+          meshyState.badKeyHash = null;
+          meshyState.nextAttemptAt = 0;
+          meshy429Streak = 0;
+          if (meshyState.status === 'disabled') meshyState.status = 'idle';
+          refreshMeshy(() => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, meshy: meshyForPayload() }));
+          });
+        });
+        return;
+      }
       if (route === '/api/startup/enable' || route === '/api/startup/disable') {
         if (!allowMutation(req, res)) return;
         const on = route.endsWith('enable');
@@ -4896,7 +5547,12 @@ function startServer(port, host, opts) {
         ((opts && opts.tray) || readConfig().tray === true)) {
       try { fs.writeFileSync(path.join(pulseHome(), 'tray.ps1'), trayScript(port)); } catch {}
     }
-    if (opts && opts.tray && LOOPBACK_HOSTS.has(host)) startTray(port);
+    // Spawn from the CONFIG too, not just the --tray flag. `tray: true` is a
+    // persisted preference (the dashboard toggle writes it), so a flag-only
+    // spawn meant every restart silently lost the icon while payload.tray kept
+    // reporting enabled:true — the toggle looked on with nothing on screen.
+    // Matches how openusage/strip launch from config on the next two lines.
+    if (((opts && opts.tray) || readConfig().tray === true) && LOOPBACK_HOSTS.has(host)) startTray(port);
     // OpenUsage companion (opt-in) — start the taskbar app alongside Pulse.
     if (readConfig().openusage === true && LOOPBACK_HOSTS.has(host)) launchOpenUsage();
     // Pulse Strip (opt-in) — Pulse's own taskbar strip companion.

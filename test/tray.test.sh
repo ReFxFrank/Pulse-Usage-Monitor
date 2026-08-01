@@ -59,6 +59,29 @@ sleep 3.2
 curl -s "http://127.0.0.1:$PORT/api/statusline" > "$TMP/sl-off.json"
 kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
 
+# --- boot path: `tray: true` in config must spawn the icon on a plain start ---
+# Regression guard. The tray used to spawn ONLY for the --tray flag, so every
+# restart silently dropped the icon while payload.tray kept saying enabled:true.
+# PULSE_NO_TRAY_SPAWN makes startTray log instead of spawning, so the log line
+# is the proof that the boot path reached it — no real tray process involved.
+setTray() { # merge, never clobber — later assertions read the rest of this config
+  node -e 'const fs=require("fs"),p=process.argv[1];const c=JSON.parse(fs.readFileSync(p,"utf8"));c.tray=process.argv[2]==="true";fs.writeFileSync(p,JSON.stringify(c))' "$PH/config.json" "$1"
+}
+setTray true
+PULSE_HOME=$PH CLAUDE_DIR=$CL CODEX_DIR=$TMP/nc PULSE_SUMMARY_MEMO_MS=0 PULSE_NO_TRAY_SPAWN=1 PULSE_NO_OPENUSAGE_SPAWN=1 PULSE_NO_STRIP_SPAWN=1 \
+node "$ROOT/server.js" --port $PORT --no-update-check >"$TMP/boot-on.log" 2>&1 &
+SRV2=$!
+sleep 2.2
+kill $SRV2 2>/dev/null; wait $SRV2 2>/dev/null
+
+# ...and must NOT spawn when the config says otherwise (no flag, tray:false).
+setTray false
+PULSE_HOME=$PH CLAUDE_DIR=$CL CODEX_DIR=$TMP/nc PULSE_SUMMARY_MEMO_MS=0 PULSE_NO_TRAY_SPAWN=1 PULSE_NO_OPENUSAGE_SPAWN=1 PULSE_NO_STRIP_SPAWN=1 \
+node "$ROOT/server.js" --port $PORT --no-update-check >"$TMP/boot-off.log" 2>&1 &
+SRV3=$!
+sleep 2.2
+kill $SRV3 2>/dev/null; wait $SRV3 2>/dev/null
+
 node -e '
 const fs = require("fs"); const T = process.argv[1];
 let fail = 0;
@@ -95,6 +118,14 @@ ok(cfg.tray === false, "config ends tray-disabled (persisted writes)");
 ok(cfg.openusage === false && typeof cfg.openusagePath === "string",
    "config ends openusage-disabled with openusagePath retained");
 ok(J("sl-off.json").trayEnabled === false, "statusline flips to trayEnabled:false (tray self-exit signal)");
+// Boot path: config alone (no --tray flag) must reach startTray, and must not
+// when the config is off. Regression guard for the icon vanishing on restart.
+const bootOn = fs.readFileSync(T + "/boot-on.log", "utf8");
+const bootOff = fs.readFileSync(T + "/boot-off.log", "utf8");
+ok(/tray spawn suppressed/.test(bootOn),
+   "config tray:true spawns the icon on a plain start (no --tray flag)");
+ok(!/tray spawn suppressed/.test(bootOff),
+   "config tray:false does NOT spawn on start");
 process.exit(fail);
 ' "$TMP" "$GETCODE" "$PH" "$GETOU" "$GETST"
 RES=$?

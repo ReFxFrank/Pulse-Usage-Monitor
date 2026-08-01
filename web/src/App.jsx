@@ -8,7 +8,7 @@ import {
 import { SpendChart, Sparkline } from './charts.jsx';
 import {
   Card, CurrentBlock, BurnRate, Rollup, BarList, EffortSpendBars, ProjectBars, SessionsTable, PeriodSelect, Legend, InfoTip, AlertsBar, Heatmap, BudgetCard,
-  PlanValueCard, CacheSavings, FastSpendNote,
+  PlanValueCard, CacheSavings, FastSpendNote, MeshyCard,
 } from './panels.jsx';
 import { ServerPanel, StopButton } from './server-panel.jsx';
 import { MetersCard } from './meters.jsx';
@@ -156,6 +156,9 @@ export default function App() {
               <p>Pulse is watching <code>{data.claudeDir}</code>. Run Claude Code and your usage appears here — the page refreshes every 10 seconds.</p>
             </div>
           </div>
+          {/* Meshy has no local logs, so it can have plenty to show on a
+              machine with no Claude/Codex history at all. */}
+          <MeshyCard meshy={data.meshy} delay={0.15} />
           {/* the background process must stay controllable even with no data */}
           <ServerPanel data={data} onStopped={() => setStopped(true)} gfx={{ mode: gfxMode, lite: liteActive, set: setGfxMode }} delay={0.2} />
         </>
@@ -305,6 +308,11 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
       </div>
 
       <MetersCard meters={data.meters} codex={data.codexMeters} codexUsage={data.codexUsage} delay={0.18} />
+
+      {/* Meshy sits with the account-level cards and ABOVE the spend section on
+          purpose: it is counted in credits, not dollars, and must never read as
+          another row of the money below it. */}
+      <MeshyCard meshy={data.meshy} delay={0.19} />
 
       {period && (
         <>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Card } from './panels.jsx';
+import { Card, MeshyKeyForm } from './panels.jsx';
 import { postJson, useLogs, dur, clockTime, hm } from './lib.js';
 
 // Small confirm-then-stop button, shared by the header and the Server panel.
@@ -130,6 +130,22 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
     setBusy(null);
   }
 
+  // Meshy (opt-in): the only source Pulse authenticates to with a key the USER
+  // gives it. Consent flips here; the key itself is set below, in a POST body.
+  async function onToggleMeshy() {
+    setBusy('meshy');
+    try {
+      const on = !(data.meshy && data.meshy.enabled);
+      await postJson('/api/meshy/' + (on ? 'enable' : 'disable'));
+      setNote(on
+        ? (data.meshy && data.meshy.hasKey
+          ? 'Meshy enabled — the credits card appears on the next refresh (~10s).'
+          : 'Meshy enabled — paste your API key below and Pulse starts reading your credit balance.')
+        : 'Meshy disabled — Pulse stops calling api.meshy.ai. Your key stays in ~/.pulse/config.json until you remove it.');
+    } catch (e) { setNote('Meshy toggle failed: ' + e.message); }
+    setBusy(null);
+  }
+
   async function onToggleDiscord() {
     setBusy('discord');
     try {
@@ -246,6 +262,16 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
             ? 'Discord presence: on' + (data.discord.status === 'ok' ? '' : ' (' + data.discord.status + ')')
             : 'Discord presence: off')}
         </button>
+        {data.meshy && (
+          <button
+            className="btn ghost"
+            onClick={onToggleMeshy}
+            disabled={busy === 'meshy'}
+            title="Reads your Meshy 3D-generation credit balance and usage with an API key you paste. Credits are tracked as their own unit — never converted to dollars, never part of your spend."
+          >
+            {busy === 'meshy' ? 'Saving…' : ('Meshy credits: ' + (data.meshy.enabled ? 'on' : 'off'))}
+          </button>
+        )}
         {data.tray && data.tray.supported && (
           <button
             className="btn ghost"
@@ -311,6 +337,25 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
         (nothing sent over the network by Pulse). Works out of the box: just flip it on with Discord running.
         It’s public to anyone who can see your profile.
       </div>
+      {data.meshy && (
+        <div className="sub" style={{ margin: '-4px 0 4px' }}>
+          <b style={{ color: 'var(--text-2)' }}>Meshy credits</b> (opt-in) reads your Meshy 3D-generation
+          balance and per-task credit usage with an API key you paste below. Meshy bills in <b>credits</b>,
+          and there is no published credit-to-dollar rate — so Pulse keeps them in their own unit and never
+          folds them into spend, budgets or plan value. The key is stored in <code>~/.pulse/config.json</code>,
+          sent only to <code>api.meshy.ai</code>, and is never logged, exported, or shown back to you.
+          {data.meshy.enabled && (
+            <>
+              <div style={{ marginTop: 8, color: 'var(--text-3)' }}>
+                {data.meshy.hasKey
+                  ? 'An API key is set on this machine. Replacing it takes effect on the next refresh.'
+                  : 'No API key set yet — nothing is fetched until you add one.'}
+              </div>
+              <MeshyKeyForm hasKey={!!data.meshy.hasKey} />
+            </>
+          )}
+        </div>
+      )}
       {data.startup && data.startup.supported && (
         <div className="sub" style={{ margin: '-4px 0 4px' }}>
           <b style={{ color: 'var(--text-2)' }}>Start with Windows</b> (opt-in) adds a per-user startup entry
