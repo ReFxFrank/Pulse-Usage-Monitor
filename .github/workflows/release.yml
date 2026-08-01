@@ -48,6 +48,15 @@ jobs:
         shell: bash
         run: ./dist-exe/${{ matrix.artifact }} --help
 
+      # Upload the OS binary BEFORE the optional Windows extras below. The
+      # release job is `needs: build`, so anything that fails after this point
+      # would otherwise take the whole release down with it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist-exe/${{ matrix.artifact }}
+          if-no-files-found: error
+
       # Pulse Strip: the Windows taskbar companion (strip/, C# — ported from
       # openusage-windows under MIT), published as its own single-file exe.
       - uses: actions/setup-dotnet@v4
@@ -78,12 +87,17 @@ jobs:
       # %LOCALAPPDATA%\Programs\Pulse — no admin, same layout `--install` uses.
       # Must run after BOTH the SEA build and the strip publish, since it packs
       # dist-exe\pulse.exe and dist-strip\pulse-strip.exe.
+      # The three OS binaries are already uploaded above, so these extras are
+      # best-effort: a broken installer build should cost us PulseSetup.exe,
+      # not the entire release (the release job is `needs: build`).
       - name: Install Inno Setup
         if: matrix.os == 'windows-latest'
+        continue-on-error: true
         run: choco install innosetup -y --no-progress
 
       - name: Build installer (PulseSetup.exe)
         if: matrix.os == 'windows-latest'
+        continue-on-error: true
         shell: pwsh
         run: |
           $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
@@ -98,15 +112,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'windows-latest'
+        continue-on-error: true
         with:
           name: PulseSetup.exe
           path: dist-installer/PulseSetup.exe
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist-exe/${{ matrix.artifact }}
           if-no-files-found: error
 
   release:
