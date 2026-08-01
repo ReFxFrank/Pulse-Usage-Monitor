@@ -25,6 +25,16 @@
     last-good. Only the `text-to-3d` list endpoint is documented by Meshy, so
     the other task families are probed defensively and the card reports which
     ones actually answered rather than implying full coverage.
+- **The tray now says why it disappeared.** Every way the icon can vanish was
+  silent, so the dashboard would report the tray as enabled with nothing on
+  screen and nothing anywhere explaining it. The tray is spawned detached with
+  its output discarded, so it now writes to `~/.pulse/pulse.log` — which is
+  exactly what the Server panel tails — on all four paths: it lost the
+  single-instance race to an existing icon (normal after a restart, and the
+  line says how to clear a stale owner), it was turned off in the dashboard,
+  the server went unreachable for ~3 minutes, or it is relaunching after a
+  version change. It also logs once when the icon is shown, including the
+  reminder that Windows hides new tray icons behind the `^` chevron.
 - **The tray icon is Pulse now.** It used to be a flat coloured circle with a
   number — no brand anywhere — and when meters were off it fell back to
   `ExtractAssociatedIcon`, which on the packaged build is **node's** logo, not

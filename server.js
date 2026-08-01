@@ -4680,10 +4680,29 @@ function openBrowser(port) {
 let trayDesired = null;
 function trayScript(port) {
   return [
+    // The tray is spawned detached with stdio ignored, so anything it prints is
+    // discarded — it logs to ~/.pulse/pulse.log instead, which is exactly what
+    // the Server panel tails.
+    "$logFile = Join-Path $env:USERPROFILE '.pulse\\pulse.log'",
+    // Same shape as the server's own lines so the tail reads uniformly.
+    // ASCII only: PowerShell 5.1 + the log's other readers disagree about
+    // encoding often enough that a stray em-dash shows up as mojibake.
+    'function Write-PulseLog([string]$msg) {',
+    '  try {',
+    "    $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')",
+    "    Add-Content -Path $logFile -Value ($ts + ' INFO  [pulse] tray: ' + $msg) -Encoding UTF8 -ErrorAction Stop",
+    '  } catch { }',
+    '}',
     "$mtx = New-Object System.Threading.Mutex($false, 'PulseTray" + port + "')",
     // 10s (not 0): during a version handoff the new instance starts before
     // the old one has released the mutex.
-    'if (-not $mtx.WaitOne(10000)) { exit }',
+    // Losing this race is NORMAL (a restart while an older icon is still up),
+    // but exiting silently meant the dashboard reported the tray as enabled
+    // with nothing on screen and nothing anywhere explaining why. Say it.
+    'if (-not $mtx.WaitOne(10000)) {',
+    "  Write-PulseLog 'another instance already owns the icon on port " + port + "; this one is exiting. If no icon is visible, that owner is stale - end the powershell process running tray.ps1, or toggle the tray off and on in the Server panel.'",
+    '  exit',
+    '}',
     "$myVer = '" + PULSE_VERSION + "'",
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
@@ -4752,6 +4771,7 @@ function trayScript(port) {
     '$ni.Icon = $baseIcon',
     "$ni.Text = 'Pulse'",
     '$ni.Visible = $true',
+    "Write-PulseLog ('icon shown (v' + $myVer + ', port " + port + "). Windows hides new tray icons behind the ^ chevron until you drag one out or promote it in Taskbar settings.')",
     // Live badge: the Claude 5h used-% painted on the icon, colored by level —
     // the number is readable at a glance without hovering.
     // The brand square keeps the identity; the number gives the exact figure;
@@ -4804,10 +4824,11 @@ function trayScript(port) {
     '  try {',
     "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
     // The dashboard toggle turns the tray off by flipping this field.
-    '    if ($s.trayEnabled -eq $false) { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return }',
+    "    if ($s.trayEnabled -eq $false) { Write-PulseLog 'turned off in the dashboard - hiding the icon and exiting.'; $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return }",
     // Server updated under us: the server rewrote tray.ps1, so relaunch
     // from the fresh file and hand over the mutex.
     '    if ($s.version -and $s.version -ne $myVer) {',
+    "      Write-PulseLog ('server is now v' + $s.version + ' (icon was built for v' + $myVer + ') - relaunching from the rewritten script.')",
     "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
     '      $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return',
     '    }',
@@ -4828,7 +4849,7 @@ function trayScript(port) {
     '  } catch {',
     '    $script:fails = $script:fails + 1',
     "    $ni.Text = 'Pulse - server not responding'",
-    '    if ($script:fails -ge 6) { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit() }',
+    "    if ($script:fails -ge 6) { Write-PulseLog 'server unreachable for 6 polls (~3 min) - exiting. Start Pulse again and the icon comes back.'; $ni.Visible = $false; [System.Windows.Forms.Application]::Exit() }",
     '  }',
     '}',
     '$timer = New-Object System.Windows.Forms.Timer',
