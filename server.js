@@ -701,29 +701,53 @@ function rooTaskFiles() { return taskFilesUnder(rooExtensionDirs()); }
 // (filters, CSV columns, colors), `path` is a .jsonl file or a directory
 // walked for *.jsonl, `label` is the display name (defaults to the name).
 const CUSTOM_SOURCE_NAME_RE = /^[a-z][a-z0-9_-]{0,23}$/;
-// Names that would collide with (or spoof) a built-in source.
-const CUSTOM_SOURCE_RESERVED = new Set(['cli', 'claude', 'codex', 'gemini', 'cline', 'continue', 'roo']);
+// Names that would collide with (or spoof) a built-in source — including
+// 'mixed', the sessions table's multi-source label.
+const CUSTOM_SOURCE_RESERVED = new Set(['cli', 'claude', 'codex', 'gemini', 'cline', 'continue', 'roo', 'mixed']);
 const CUSTOM_SOURCES_MAX = 8;
+const customSourceWarned = new Set(); // warn ONCE per dropped row / oversized file
 function customSourcesConfig() {
   const raw = readConfig().customSources;
   if (!Array.isArray(raw)) return [];
   const out = [];
   const seen = new Set();
+  const takenLabels = new Set(); // lowercased display identities (names + labels)
   for (const row of raw) {
     if (out.length >= CUSTOM_SOURCES_MAX) break;
     if (!row || typeof row !== 'object') continue;
     const name = typeof row.name === 'string' ? row.name.trim() : '';
     const p = typeof row.path === 'string' ? row.path.trim() : '';
-    if (!CUSTOM_SOURCE_NAME_RE.test(name) || CUSTOM_SOURCE_RESERVED.has(name) || seen.has(name) || !p) continue;
+    if (!CUSTOM_SOURCE_NAME_RE.test(name) || CUSTOM_SOURCE_RESERVED.has(name) || seen.has(name) || !p) {
+      // Dropped rows must be diagnosable (this runs per aggregate — warn once).
+      const why = !CUSTOM_SOURCE_NAME_RE.test(name)
+        ? 'invalid name (letter-first lowercase slug of a-z 0-9 _ -, max 24 chars)'
+        : CUSTOM_SOURCE_RESERVED.has(name) ? 'reserved name'
+        : seen.has(name) ? 'duplicate name' : 'missing path';
+      const k = JSON.stringify(row.name);
+      if (!customSourceWarned.has(k)) {
+        customSourceWarned.add(k);
+        console.warn('[pulse] customSources: dropped ' + k + ' — ' + why);
+      }
+      continue;
+    }
     seen.add(name);
+    takenLabels.add(name);
     // The label reaches the DOM, CSV headers and the terminal — sanitize like
-    // the plan label: control chars stripped BEFORE the length cap.
-    const label = typeof row.label === 'string'
+    // the plan label: control chars stripped BEFORE the length cap. It is a
+    // display alias, so it must not read as a built-in source or as another
+    // source's name/label (case-insensitively) — fall back to the name.
+    let label = typeof row.label === 'string'
       ? row.label.replace(CONTROL_CHARS, '').trim().slice(0, 24) : '';
-    out.push({ name, path: p, label: label || name });
+    const lc = label.toLowerCase();
+    if (!label || CUSTOM_SOURCE_RESERVED.has(lc) || (takenLabels.has(lc) && lc !== name)) label = name;
+    else takenLabels.add(lc);
+    out.push({ name, path: p, label });
   }
   return out;
 }
+// The currently-configured custom source names, as a Set — the identity roster
+// the archive-merge paths check stale custom cells against.
+function customSourceNames() { return new Set(customSourcesConfig().map((s) => s.name)); }
 // One source's files: the configured path itself when it's a file (any
 // extension — the config names it explicitly), else every *.jsonl under the
 // directory. A missing path yields [] — the harness just hasn't logged yet.
@@ -1330,11 +1354,27 @@ function parseClineFile(filePath, source = 'cline') {
 // Either way costFromSource is set so nothing ever re-prices the entry.
 // Malformed lines are skipped; only a failed READ returns null (parseAll
 // keeps prior cached entries and retries next cycle).
+const CUSTOM_SOURCE_MAX_BYTES = 50 * 1024 * 1024; // user logs have no rotation guarantee — cap the sync read
 function parseCustomFile(filePath, src) {
+  // Size guard BEFORE the read: an unbounded readFileSync of a user-pointed
+  // file would block the event loop (or throw at >512MB) on every cycle.
+  // Returning the empty shape (not null) caches the skip under the current
+  // mtime, so an oversized file costs one statSync per change, not a re-read.
+  try {
+    if (fs.statSync(filePath).size > CUSTOM_SOURCE_MAX_BYTES) {
+      if (!customSourceWarned.has(filePath)) {
+        customSourceWarned.add(filePath);
+        console.warn(`[pulse] custom source "${src.name}": ${filePath} exceeds ${CUSTOM_SOURCE_MAX_BYTES / 1048576} MB — skipped (rotate the log into a directory of smaller files)`);
+      }
+      return { entries: [], sessionMeta: {}, ultracodeSessions: [], effortEvents: [] };
+    }
+  } catch (_) { return null; }
   let text;
   try { text = fs.readFileSync(filePath, 'utf8'); } catch (_) { return null; }
   const byId = new Map();
-  const sessionMeta = {};
+  // Null-prototype: sid comes from the record ("__proto__" as a key on a plain
+  // object literal would silently rewrite the prototype instead of storing).
+  const sessionMeta = Object.create(null);
   const lines = text.split('\n');
   const num = (v) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0);
   for (let i = 0; i < lines.length; i++) {
@@ -1436,20 +1476,33 @@ function parseAll() {
   const continueFiles = walkJsonl(continueDevDataRoot()).filter((f) => path.basename(f) === 'tokensGenerated.jsonl');
   const clineFiles = clineTaskFiles();
   const rooFiles = rooTaskFiles();
-  // Config-defined custom sources: map each file → its source descriptor. A
-  // path that overlaps an auto-discovered root still parses as the custom
-  // source (explicit config wins — the dispatch below checks this map FIRST).
-  const customByFile = new Map();
-  for (const src of customSourcesConfig()) {
-    for (const f of customSourceFiles(src)) if (!customByFile.has(f)) customByFile.set(f, src);
-  }
-  const customFiles = Array.from(customByFile.keys());
-  const walkMs = Date.now() - walkT0;
   const codexSet = new Set(codexFiles);
   const geminiSet = new Set(geminiFiles);
   const continueSet = new Set(continueFiles);
   const clineSet = new Set(clineFiles);
   const rooSet = new Set(rooFiles);
+  // Config-defined custom sources: map each file → its source descriptor. A
+  // file already claimed by auto-discovery is NEVER re-claimed by a custom
+  // source: the builtin identity is what past days were sealed under, so
+  // re-sourcing it would double-count against the archive. Warn once so a
+  // custom source that silently stays empty is diagnosable.
+  const builtinClaimed = new Set(claudeFiles.concat(codexFiles, geminiFiles, continueFiles, clineFiles, rooFiles));
+  const customByFile = new Map();
+  for (const src of customSourcesConfig()) {
+    for (const f of customSourceFiles(src)) {
+      if (builtinClaimed.has(f)) {
+        const k = 'overlap:' + f;
+        if (!customSourceWarned.has(k)) {
+          customSourceWarned.add(k);
+          console.warn(`[pulse] customSources: "${src.name}" points at ${f}, which another source already ingests — ignored (custom sources must have their own log files)`);
+        }
+        continue;
+      }
+      if (!customByFile.has(f)) customByFile.set(f, src);
+    }
+  }
+  const customFiles = Array.from(customByFile.keys());
+  const walkMs = Date.now() - walkT0;
   const files = claudeFiles.concat(codexFiles, geminiFiles, continueFiles, clineFiles, rooFiles, customFiles);
   const liveFiles = new Set(files);
 
@@ -1457,12 +1510,23 @@ function parseAll() {
   for (const f of files) {
     let st;
     try { st = fs.statSync(f); } catch (_) { continue; }
+    // The cached parse depends on WHICH parser/source claimed the file, not
+    // just its content — a customSources config edit (rename/add/remove) must
+    // invalidate it even when the file's mtime is unchanged. Labels don't
+    // affect parse output (applied at payload time), so the name suffices.
+    const customSrc = customByFile.get(f);
+    const route = customSrc ? 'custom:' + customSrc.name
+      : codexSet.has(f) ? 'codex'
+      : geminiSet.has(f) ? 'gemini'
+      : continueSet.has(f) ? 'continue'
+      : clineSet.has(f) ? 'cline'
+      : rooSet.has(f) ? 'roo'
+      : 'claude';
     const cached = fileCache.get(f);
-    if (cached && cached.mtimeMs === st.mtimeMs) {
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.route === route) {
       skipped++;
       continue;
     }
-    const customSrc = customByFile.get(f);
     const result = customSrc ? parseCustomFile(f, customSrc)
       : codexSet.has(f) ? parseCodexFile(f)
       : geminiSet.has(f) ? parseGeminiFile(f)
@@ -1478,6 +1542,7 @@ function parseAll() {
     }
     fileCache.set(f, {
       mtimeMs: st.mtimeMs,
+      route,
       entries: result.entries,
       sessionMeta: result.sessionMeta,
       ultracodeSessions: result.ultracodeSessions || [],
@@ -1491,17 +1556,26 @@ function parseAll() {
     if (!liveFiles.has(key)) fileCache.delete(key);
   }
 
-  // Merge all cached files → global dedup.
+  // Merge all cached files → global dedup. First occurrence wins — EXCEPT for
+  // custom-source keys, where the same record id legitimately reappears across
+  // rotated files and the documented semantics are last-write-wins: the record
+  // with the newer timestamp replaces the older one (>= so a same-ts rewrite in
+  // a later file also wins). Builtin keys never collide across files except as
+  // identical stream duplicates, where first-vs-last is equivalent.
   const merged = [];
-  const globalSeen = new Set();
-  const sessionMeta = {};
+  const globalSeen = new Map(); // key -> index in merged
+  const sessionMeta = Object.create(null); // sids are record-supplied strings
   const ultracodeSessions = new Set();
   const effortEvents = [];
   let codexRateSnapshot = null;
   for (const { entries, sessionMeta: sm, ultracodeSessions: us, effortEvents: ev, codexRateSnapshot: rs } of fileCache.values()) {
     for (const e of entries) {
-      if (globalSeen.has(e.key)) continue;
-      globalSeen.add(e.key);
+      const prevIdx = globalSeen.get(e.key);
+      if (prevIdx !== undefined) {
+        if (e.provider === 'custom' && e.ts >= merged[prevIdx].ts) merged[prevIdx] = e;
+        continue;
+      }
+      globalSeen.set(e.key, merged.length);
       merged.push(e);
     }
     for (const sid of us || []) ultracodeSessions.add(sid);
@@ -1879,7 +1953,8 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   }
 
   // ---- recent sessions (newest first) ----
-  const sessMap = {};
+  // Null-prototype: keyed by record-supplied sessionIds ("__proto__" etc.).
+  const sessMap = Object.create(null);
   for (const e of asc) {
     const sid = e.sessionId || '(unknown)';
     let s = sessMap[sid];
@@ -1924,19 +1999,24 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   for (const e of asc) {
     const ds = localDateStr(e.ts);
     const k = cellKey(e.source, e.model);
-    const day = liveCellsByDay[ds] || (liveCellsByDay[ds] = {});
+    const day = liveCellsByDay[ds] || (liveCellsByDay[ds] = Object.create(null));
     const cell = day[k] || (day[k] = { source: e.source, model: e.model, cost: 0, tokens: 0, messages: 0 });
     cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
+    if (e.provider === 'custom') cell.c = 1;
   }
-  const totals = { cost: 0, tokens: 0, messages: 0, sessions: Object.keys(sessMap).length, bySource: {} };
+  const totals = { cost: 0, tokens: 0, messages: 0, sessions: Object.keys(sessMap).length, bySource: Object.create(null) };
   const allDays = new Set(Object.keys(liveCellsByDay));
   for (const ds of Object.keys(hist.byDay)) allDays.add(ds);
+  const totCustomNames = customSourceNames();
   for (const ds of allDays) {
     const lc = liveCellsByDay[ds] || {};
     const ac = indexCells(hist.byDay[ds] && hist.byDay[ds].rows);
     const keys = new Set(Object.keys(lc));
     for (const k of Object.keys(ac)) keys.add(k);
+    // Same stale-custom-cell retirement as buildPeriod pass 2 — see there.
+    const liveHasCustom = Object.keys(lc).some((k2) => lc[k2].c);
     for (const k of keys) {
+      if (!lc[k] && ac[k] && ac[k].c && liveHasCustom && !totCustomNames.has(ac[k].source)) continue;
       const cell = pickCell(lc[k], ac[k]);
       totals.cost += cell.cost; totals.tokens += cell.tokens; totals.messages += cell.messages;
       // Same merged cell, split by source — so an archived-only source (its live
@@ -1995,10 +2075,11 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     // Keys everywhere else (filters, CSV columns, colors) stay the raw name;
     // config-derived, so identical in filtered and unfiltered builds.
     sourceMeta: sourceMetaForPayload(),
-    // Union live-flagged estimate sources with the known set, over allSources —
-    // so a source like Continue stays badged "est" even after its live logs are
-    // pruned and only the (flag-less) archive remains.
-    estimatedSources: allSources.filter((s) => estimatedSourcesSet.has(s) || KNOWN_ESTIMATE_SOURCES.has(s)),
+    // Union live-flagged estimate sources with the known set AND the archive's
+    // persisted est marks, over allSources — so an estimated source (Continue,
+    // or a flagged custom source) stays badged even after its live logs are
+    // pruned and only the archive remains.
+    estimatedSources: allSources.filter((s) => estimatedSourcesSet.has(s) || KNOWN_ESTIMATE_SOURCES.has(s) || (hist.estSources && hist.estSources.has(s))),
     recentSessions,
     heatmap,
     pricing: buildPricingView(now),
@@ -2023,12 +2104,16 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
     index[ds] = bucket;
     daily.push(bucket);
   }
-  const byModel = {}, bySource = {}, srcSet = new Set(), sess = new Set();
+  // Null-prototype accumulators: keys come from record-supplied strings (model,
+  // project) — on a plain object literal a key like "__proto__" would rewrite
+  // the prototype instead of storing a row. Object.keys/values/stringify are
+  // unaffected by the null prototype.
+  const byModel = Object.create(null), bySource = Object.create(null), srcSet = new Set(), sess = new Set();
   let cost = 0, tokens = 0, messages = 0;
   // Analytics breakdowns — live-only (the archive keeps day/source/model totals,
   // not per-entry effort or project), so these cover the sessions still in your
   // logs. Effort bucket = ultracode | <level> | default (no explicit level).
-  const effortSpend = {}, byProject = {};
+  const effortSpend = Object.create(null), byProject = Object.create(null);
   // Cache economics and fast-mode spend are per-ENTRY facts (token type, speed,
   // the model's price row at that timestamp) — the archive keeps none of that,
   // so both are LIVE-only, exactly like effortSpend/byProject above.
@@ -2046,9 +2131,10 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
   for (const e of entries) {
     const ds = localDateStr(e.ts);
     const k = cellKey(e.source, e.model);
-    const day = liveCells[ds] || (liveCells[ds] = {});
+    const day = liveCells[ds] || (liveCells[ds] = Object.create(null));
     const cell = day[k] || (day[k] = { source: e.source, model: e.model, cost: 0, tokens: 0, messages: 0 });
     cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
+    if (e.provider === 'custom') cell.c = 1; // custom identity — see the archive-merge rule
     if (e.sessionId) sess.add(e.sessionId);
     const ce = cacheEconomicsForEntry(e);
     cacheSavings.readTokens += ce.read;
@@ -2091,13 +2177,21 @@ function buildPeriod(key, label, entries, dayList, allSources, hist, liveDays) {
   // per cell (not all-or-nothing per day) recovers a provider/session pruned
   // from the live logs while another remains, and each cell contributes exactly
   // once, so nothing is double-counted.
+  const customNames = customSourceNames();
   for (const ds of dayList) {
     const lc = liveCells[ds] || {};
     const ac = hist ? indexCells(hist.byDay[ds] && hist.byDay[ds].rows) : {};
     const keys = new Set(Object.keys(lc));
     for (const k of Object.keys(ac)) keys.add(k);
     const b = index[ds];
+    // Custom-source archive rows are keyed by a config-mutable name. When a
+    // day still has LIVE custom coverage, an archived custom cell whose source
+    // is no longer configured is the pre-rename duplicate of data now counted
+    // under the new name — retire it. Days with no live custom entries keep
+    // everything (a removed source's genuinely pruned history must survive).
+    const liveHasCustom = Object.keys(lc).some((k2) => lc[k2].c);
     for (const k of keys) {
+      if (!lc[k] && ac[k] && ac[k].c && liveHasCustom && !customNames.has(ac[k].source)) continue;
       const cell = pickCell(lc[k], ac[k]);
       if (b) { b.total += cell.cost; b.tokens += cell.tokens; b.bySource[cell.source] = (b.bySource[cell.source] || 0) + cell.cost; }
       cost += cell.cost; tokens += cell.tokens; messages += cell.messages; srcSet.add(cell.source);
@@ -2210,7 +2304,7 @@ function historyDir() {
   return process.env.PULSE_HISTORY_DIR || path.join(pulseHome(), 'history');
 }
 
-const EMPTY_HISTORY = { byDay: {}, sources: new Set(), models: new Set(), months: new Set() };
+const EMPTY_HISTORY = { byDay: {}, sources: new Set(), models: new Set(), months: new Set(), estSources: new Set() };
 let historyCache = { sig: '', data: null };
 
 // Read every archived month into { byDay, sources, models, months }. Cached by
@@ -2226,7 +2320,7 @@ function readHistory() {
     try { sig += f + ':' + fs.statSync(path.join(dir, f)).mtimeMs + ';'; } catch (_) {}
   }
   if (historyCache.sig === sig && historyCache.data) return historyCache.data;
-  const byDay = {}, sources = new Set(), models = new Set(), months = new Set();
+  const byDay = {}, sources = new Set(), models = new Set(), months = new Set(), estSources = new Set();
   for (const f of files) {
     let obj;
     try { obj = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (_) { continue; }
@@ -2238,14 +2332,19 @@ function readHistory() {
       const rows = [];
       for (const r of rec.rows) {
         if (!r || typeof r.source !== 'string' || typeof r.model !== 'string') continue;
-        rows.push({ source: r.source, model: r.model, cost: +r.cost || 0, tokens: +r.tokens || 0, messages: +r.messages || 0 });
+        const row = { source: r.source, model: r.model, cost: +r.cost || 0, tokens: +r.tokens || 0, messages: +r.messages || 0 };
+        // Identity marks written by sealHistory — est keeps the badge after
+        // the live logs prune, c lets the merges retire renamed custom cells.
+        if (r.est) { row.est = 1; estSources.add(r.source); }
+        if (r.c) row.c = 1;
+        rows.push(row);
         sources.add(r.source);
         if (!HIDDEN_MODELS.has(r.model)) models.add(r.model);
       }
       byDay[ds] = { rows, sessions: +rec.sessions || 0 };
     }
   }
-  const data = { byDay, sources, models, months };
+  const data = { byDay, sources, models, months, estSources };
   historyCache = { sig, data };
   return data;
 }
@@ -2253,14 +2352,18 @@ function readHistory() {
 // Restrict an archive view to a set of sources (mirrors the dashboard's source
 // filter). Session counts aren't source-split, so they carry over as-is.
 function filterHistory(history, sourceSet) {
-  const byDay = {}, sources = new Set(), models = new Set();
+  const byDay = {}, sources = new Set(), models = new Set(), estSources = new Set();
   for (const ds of Object.keys(history.byDay)) {
     const rows = history.byDay[ds].rows.filter((r) => sourceSet.has(r.source));
     if (!rows.length) continue;
     byDay[ds] = { rows, sessions: history.byDay[ds].sessions };
-    for (const r of rows) { sources.add(r.source); if (!HIDDEN_MODELS.has(r.model)) models.add(r.model); }
+    for (const r of rows) {
+      sources.add(r.source);
+      if (r.est) estSources.add(r.source);
+      if (!HIDDEN_MODELS.has(r.model)) models.add(r.model);
+    }
   }
-  return { byDay, sources, models, months: history.months };
+  return { byDay, sources, models, months: history.months, estSources };
 }
 
 // Live logs for a single past day can SHRINK over time — ~/.claude and ~/.codex
@@ -2280,20 +2383,34 @@ function indexCells(rows) {
   return o;
 }
 // Pruning only ever removes messages, so the observation with MORE messages
-// (tie: more cost) is the more complete one.
+// (tie: more cost) is the more complete one. The est/c marks are facts about
+// the cell's IDENTITY (estimated counts / custom source), not its completeness
+// — never lose them to whichever observation happened to be fuller.
 function pickCell(a, b) {
   if (!a) return b;
   if (!b) return a;
-  return (b.messages > a.messages || (b.messages === a.messages && b.cost > a.cost)) ? b : a;
+  const win = (b.messages > a.messages || (b.messages === a.messages && b.cost > a.cost)) ? b : a;
+  if ((a.est || b.est) && !win.est) win.est = 1;
+  if ((a.c || b.c) && !win.c) win.c = 1;
+  return win;
 }
 // Non-shrinking union of an archived day and a freshly-sealed one: keep the
 // more-complete observation of every cell, so a cell since pruned from the live
 // logs is preserved rather than overwritten with the now-partial value.
-function mergeDayRecord(existing, fresh) {
+function mergeDayRecord(existing, fresh, customNames) {
   if (!existing || !Array.isArray(existing.rows)) return fresh;
   const cells = indexCells(existing.rows);
   for (const r of fresh.rows) { const k = cellKey(r.source, r.model); cells[k] = pickCell(cells[k], r); }
-  return { rows: Object.values(cells), sessions: Math.max(+existing.sessions || 0, fresh.sessions || 0) };
+  let rows = Object.values(cells);
+  // A custom-flagged cell whose source is no longer configured is the
+  // pre-rename identity of data the fresh seal carries under the new name —
+  // retiring it here heals an already-poisoned month file. Only applied when
+  // the fresh seal itself has custom rows (a rename, not a removal: a source
+  // deleted from config seals no custom rows, and its history is preserved).
+  if (customNames && fresh.rows.some((r) => r.c)) {
+    rows = rows.filter((r) => !r.c || customNames.has(r.source));
+  }
+  return { rows, sessions: Math.max(+existing.sessions || 0, fresh.sessions || 0) };
 }
 
 // Fold live entries into per-(day,source,model) rollups for SEALED days only,
@@ -2311,9 +2428,13 @@ function sealHistory(entries) {
     const ds = localDateStr(e.ts);
     if (ds >= today) continue; // never seal today (still accumulating)
     const key = cellKey(e.source, e.model);
-    const d = byDay[ds] || (byDay[ds] = {});
+    const d = byDay[ds] || (byDay[ds] = Object.create(null));
     const cell = d[key] || (d[key] = { source: e.source, model: e.model, cost: 0, tokens: 0, messages: 0 });
     cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
+    // Persist identity marks: est so the badge survives archive-only retention,
+    // c so the merge paths can retire renamed-away custom identities.
+    if (e.estimate) cell.est = 1;
+    if (e.provider === 'custom') cell.c = 1;
     if (e.sessionId) (sessByDay[ds] || (sessByDay[ds] = new Set())).add(e.sessionId);
   }
   const months = {};
@@ -2330,8 +2451,9 @@ function sealHistory(entries) {
     try { existing = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (_) {}
     // Re-seal keeps the more-complete cell for each recomputed day (never
     // shrinks); days not recomputed (already pruned) are preserved untouched.
+    const sealCustomNames = customSourceNames();
     const merged = { ...existing };
-    for (const ds of Object.keys(months[mk])) merged[ds] = mergeDayRecord(existing[ds], months[mk][ds]);
+    for (const ds of Object.keys(months[mk])) merged[ds] = mergeDayRecord(existing[ds], months[mk][ds], sealCustomNames);
     const ordered = {};
     for (const k of Object.keys(merged).sort()) ordered[k] = merged[k];
     const next = JSON.stringify(ordered);

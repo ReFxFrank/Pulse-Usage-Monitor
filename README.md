@@ -279,13 +279,23 @@ JSONL file and declare it in `~/.pulse/config.json`:
 }
 ```
 
-- `name` — short lowercase slug (`a-z0-9_-`, max 24 chars); it's the source
-  key in filters, colors and CSV columns. Built-in names (`cli`, `codex`,
-  `gemini`, `cline`, `continue`, `roo`, `claude`) are reserved. Up to 8 sources.
+- `name` — short lowercase slug: a letter first, then `a-z0-9_-`, max 24 chars
+  total; it's the source key in filters, colors and CSV columns, **and the
+  identity your history is archived under — treat it as permanent** (rename the
+  visible text via `label` instead; Pulse detects a renamed `name` and retires
+  the old identity from days it still has logs for, but archive-only days keep
+  the old name). Built-in names (`cli`, `codex`, `gemini`, `cline`, `continue`,
+  `roo`, `claude`, `mixed`) are reserved. Up to 8 sources; invalid rows are
+  dropped with a one-time warning in the server log.
 - `path` — a `.jsonl` file, or a **directory** (every `*.jsonl` under it is
-  read — monthly rotation just works). Missing path = no usage yet, no error.
+  read — monthly rotation just works; the same record `id` appearing across
+  rotated files keeps only the newest record). Missing path = no usage yet, no
+  error. A path another source already ingests (e.g. inside `~/.claude`) is
+  refused. Files over **50 MB** are skipped with a warning — rotate into a
+  directory of smaller files.
 - `label` — optional display name (e.g. `FOREMAN`); shown everywhere the
-  source appears. Defaults to the name.
+  source appears. Defaults to the name; a label that impersonates a built-in
+  source or collides with another source's name/label falls back to the name.
 
 **Record schema** — one JSON object per line; unknown keys are ignored:
 

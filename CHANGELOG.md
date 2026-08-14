@@ -22,6 +22,25 @@
   sources); labels are control-char-stripped and length-capped. As always,
   the log is read READ-ONLY. Known limitation: the Windows taskbar strip
   folds custom sources into its Claude card for now.
+- **Custom-sources hardening** (from the pre-release adversarial review —
+  all confirmed against the real code, each with a regression test):
+  archived custom rows carry a `c` identity mark so a renamed source's old
+  rows are retired from live-covered days and healed out of the month file
+  (no permanent double-count); the parse cache is route-tagged so a config
+  rename/add/remove re-attributes immediately without touching the JSONL;
+  a custom path that another source already ingests is refused (warned
+  once); the same record `id` across rotated files keeps the newest record;
+  files >50 MB are skipped with a warning instead of blocking the server;
+  per-record `estimate` marks now persist through the archive (`est` on
+  sealed rows) so the badge survives log pruning — this also applies to
+  Continue; record-supplied strings can no longer prototype-pollute the
+  accumulators (null-prototype maps); labels that impersonate built-ins or
+  collide with other sources fall back to the name; `mixed` is reserved;
+  dropped config rows warn once with the reason.
+- **Tray suite fixed on Linux:** `startTray` now checks the
+  `PULSE_NO_TRAY_SPAWN` test hook before the win32 gate, so the v1.28.0
+  boot-path regression guard actually runs on Linux (production Windows
+  behavior unchanged).
 
 ## v1.28.0
 
