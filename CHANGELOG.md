@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.29.0
+
+- **Custom sources — bring your own agent.** Declare `customSources` in
+  `~/.pulse/config.json` (`{ name, path, label? }`) and Pulse ingests a JSONL
+  usage log written by your OWN tooling — a local model harness, a homemade
+  agent — as a first-class source: filter chip, stable color, By-source bar,
+  sessions, CSV column, archive retention. `path` is a `.jsonl` file or a
+  directory of them (rotation just works); records are
+  `{ts, id?, model?, input, output, cached?, sessionId?, project?, cost?,
+  estimate?}` with `cached` a subset of `input`. Dedup is id-keyed
+  last-write-wins (replays never double-count), else file position. Cost: a
+  record-level `cost` is trusted verbatim (Cline pattern); otherwise the
+  source is tokens-only at **$0** — Pulse won't invent a rate for a model it
+  doesn't know. Custom entries never enter the Claude 5h block, never trip
+  selfCheck, and never make Discord claim "Using Claude Code" (new
+  `nonClaudeEntry` gate). `label` (e.g. `FOREMAN`) flows through a new
+  `payload.sourceMeta` to every UI surface — chips, legends, bars, sessions
+  table, chart tooltips, mini overview — while keys stay raw in filters/CSV.
+  Names are validated (lowercase slug, built-in names reserved, max 8
+  sources); labels are control-char-stripped and length-capped. As always,
+  the log is read READ-ONLY. Known limitation: the Windows taskbar strip
+  folds custom sources into its Claude card for now.
+
 ## v1.28.0
 
 - **Meshy.ai support** (opt-in). Meshy has no local log, so this is the first

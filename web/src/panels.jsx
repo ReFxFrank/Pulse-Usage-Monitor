@@ -3,7 +3,7 @@ import { motion, animate } from 'framer-motion';
 import * as Select from '@radix-ui/react-select';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { ProgressRing } from './charts.jsx';
-import { money, money2, tokens, num, pct, dur, durClock, hm, ago, dayLabel, ACCENT, perf, postJson } from './lib.js';
+import { money, money2, tokens, num, pct, dur, durClock, hm, ago, dayLabel, ACCENT, perf, postJson, sourceLabel } from './lib.js';
 import { ModelLogo, modelFamily, FAMILY_META } from './logos.jsx';
 
 const EASE = [0.2, 0.7, 0.2, 1];
@@ -63,18 +63,18 @@ export function InfoTip({ children, text }) {
   );
 }
 
-export function Legend({ period, colorMap, single }) {
+export function Legend({ period, colorMap, single, meta }) {
   if (single) {
     return (
       <div className="legend">
-        <span><i style={{ background: ACCENT }} />{period.sources[0] || 'cli'}</span>
+        <span><i style={{ background: ACCENT }} />{sourceLabel(period.sources[0] || 'cli', meta)}</span>
       </div>
     );
   }
   return (
     <div className="legend">
       {(period.sources || []).map((s) => (
-        <span key={s}><i style={{ background: colorMap.get(s) }} />{s}</span>
+        <span key={s}><i style={{ background: colorMap.get(s) }} />{sourceLabel(s, meta)}</span>
       ))}
     </div>
   );
@@ -865,9 +865,9 @@ export function BarList({ rows, modelLogos = false, estimatedSources = [] }) {
       <div className="barhint">bar length = spend · numbers show $ · tokens</div>
       <div className="hbars">
       {shown.map((r) => (
-        <InfoTip key={r.name} text={`${modelLogos ? FAMILY_META[modelFamily(r.name)].label + ' · ' : ''}${r.name} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs`}>
+        <InfoTip key={r.name} text={`${modelLogos ? FAMILY_META[modelFamily(r.name)].label + ' · ' : ''}${r.label || r.name} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs`}>
           <div className="hbar">
-            <div className="nm">{modelLogos ? <ModelLogo model={r.name} size={16} /> : <i style={{ background: r.color }} />}{r.name}{est.has(r.name) && <sup className="estmark" title="Locally-estimated usage, not provider-billed">est</sup>}</div>
+            <div className="nm">{modelLogos ? <ModelLogo model={r.name} size={16} /> : <i style={{ background: r.color }} />}{r.label || r.name}{est.has(r.name) && <sup className="estmark" title="Locally-estimated usage, not provider-billed">est</sup>}</div>
             <div className="track">
               <motion.i
                 style={{ background: r.color }}
@@ -971,7 +971,7 @@ function onlyNonStandard(speeds) {
   return out;
 }
 
-export function SessionsTable({ sessions }) {
+export function SessionsTable({ sessions, meta }) {
   if (!sessions || !sessions.length) return <div className="sub">No sessions yet.</div>;
   return (
     <div className="scrollx">
@@ -986,7 +986,7 @@ export function SessionsTable({ sessions }) {
           {sessions.map((s) => (
             <tr key={s.sessionId}>
               <td className="title">{s.title}</td>
-              <td><span className="badge">{s.source}</span></td>
+              <td><span className="badge">{sourceLabel(s.source, meta)}</span></td>
               <td>
                 <span className="spd" style={{ justifyContent: 'flex-start' }}>
                   <EffortBadges efforts={s.efforts} ultracode={!!s.ultracode} align="flex-start" />

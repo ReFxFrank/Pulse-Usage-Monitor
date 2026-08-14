@@ -66,6 +66,15 @@ export function dayLabel(ds) {
   return p[1] + '/' + p[2];
 }
 
+// Display name for a source key. Config-defined custom sources carry a label
+// in payload.sourceMeta ({ key: { label } }); every other source IS its key.
+// Keys stay raw everywhere that matters (filters, React keys, CSV) — this is
+// presentation only.
+export function sourceLabel(key, meta) {
+  const m = meta && meta[key];
+  return (m && m.label) || key;
+}
+
 // Stable color-by-entity: assign in the order names first appear (from the
 // payload's all-time lists), so a series keeps its colour across periods.
 export function makeColorMap(names) {

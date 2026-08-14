@@ -38,6 +38,11 @@ logs already on your machine.
   (Gemini at Google list prices; Cline and Roo use their own recorded costs;
   Continue's numbers are its **own local estimates**, so that source is badged
   `est`). Nothing to export or configure.
+- 🛠 **Custom sources — bring your own agent** — point Pulse at a JSONL usage
+  log written by *your own* tooling (a local model harness, a homemade agent)
+  and it becomes a first-class source with its own label, color, filter chip
+  and CSV column. One tiny append-only line per request; tokens-only at $0
+  unless a record carries its own `cost`. See **Custom sources** below.
 - 📡 **Official account meters** — provider-issued gauges with **true reset
   times**: Anthropic's account-wide 5-hour/weekly bars (opt-in; includes
   claude.ai chats, cloud sessions, other devices) and your ChatGPT plan's
@@ -259,6 +264,51 @@ stale rather than a made-up number).
 browser or mobile app writes no local logs (same as claude.ai) and cannot
 appear — no local dashboard can see it. The Codex meters reflect your plan's
 Codex allowance, not chatgpt.com chat limits (those are exposed nowhere).
+
+## 🛠 Custom sources — bring your own agent
+
+If you run your **own** model or agent (a local fine-tune, a homemade harness,
+an internal tool), have it append one JSON line per completed request to a
+JSONL file and declare it in `~/.pulse/config.json`:
+
+```json
+{
+  "customSources": [
+    { "name": "foreman", "label": "FOREMAN", "path": "C:\\Users\\you\\.foreman\\usage.jsonl" }
+  ]
+}
+```
+
+- `name` — short lowercase slug (`a-z0-9_-`, max 24 chars); it's the source
+  key in filters, colors and CSV columns. Built-in names (`cli`, `codex`,
+  `gemini`, `cline`, `continue`, `roo`, `claude`) are reserved. Up to 8 sources.
+- `path` — a `.jsonl` file, or a **directory** (every `*.jsonl` under it is
+  read — monthly rotation just works). Missing path = no usage yet, no error.
+- `label` — optional display name (e.g. `FOREMAN`); shown everywhere the
+  source appears. Defaults to the name.
+
+**Record schema** — one JSON object per line; unknown keys are ignored:
+
+```json
+{"ts":"2026-08-14T21:03:07.412Z","id":"<uuid per request>","model":"foreman-7b","input":1234,"output":567,"cached":0,"sessionId":"run-42","project":"my-fivem-server","estimate":false}
+```
+
+- `ts` (required) — ISO-8601, epoch ms, or epoch seconds.
+- `input` / `output` — token counts; `cached` is the part of `input` served
+  from a prompt cache. At least one token count must be non-zero.
+- `id` (recommended) — a stable per-request id. Pulse dedups on it with
+  **last-write-wins**, so replays or rewrites never double-count. Without it,
+  a line is identified by its file position.
+- `cost` (optional) — if a record carries a finite USD cost, Pulse trusts it
+  verbatim (like Cline's). Otherwise the source is **tokens-only at $0** — a
+  local model has no API bill, and Pulse won't invent one.
+- `estimate: true` — badge the source `est` when counts aren't tokenizer-exact.
+
+Everything else is automatic: the source gets a filter chip, stable color,
+By-source bar, sessions rows, CSV export column, and archive retention. Custom
+usage never touches the **Current 5h block** (that's Claude Code's own limit
+concept) and never skews spend totals unless your records carry real costs.
+As with every source, Pulse only ever **reads** the log.
 
 ## 📡 Account meters — regular chats included (opt-in)
 

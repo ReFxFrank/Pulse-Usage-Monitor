@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, MotionConfig } from 'framer-motion';
 import {
-  useSummary, makeColorMap, ACCENT, money2, tokens, num, clockTime, ago,
+  useSummary, makeColorMap, sourceLabel, ACCENT, money2, tokens, num, clockTime, ago,
   perf, readGraphicsMode, effectiveLite, applyGraphicsMode,
   fireAlertNotifications, requestAlertPermission, notifyPermission,
 } from './lib.js';
@@ -131,7 +131,7 @@ export default function App() {
               ? <>latest activity: <b className={stale ? 'warnc' : ''}>{ago(latest)}</b></>
               : 'no usage recorded on this machine'}
           </div>
-          <div>{num(data.totals.messages)} msgs · {num(data.totals.sessions)} sessions · {allSrc.length <= 1 ? `source: ${allSrc[0] || 'cli'}` : `${allSrc.length} sources`}</div>
+          <div>{num(data.totals.messages)} msgs · {num(data.totals.sessions)} sessions · {allSrc.length <= 1 ? `source: ${sourceLabel(allSrc[0] || 'cli', data.sourceMeta)}` : `${allSrc.length} sources`}</div>
         </div>
       }
       footer={data}
@@ -147,6 +147,7 @@ export default function App() {
         colorMap={colorMaps.src}
         onChange={updateFilter}
         estimated={data.estimatedSources || []}
+        meta={data.sourceMeta}
       />
       {!data.hasData ? (
         <>
@@ -172,7 +173,7 @@ export default function App() {
 // Multi-select source filter chips. Empty selection = all sources. The list
 // always shows every source ever seen (server keeps allSources unfiltered),
 // so a chip never disappears because you just filtered it out.
-function SourceFilter({ allSources, active, colorMap, onChange, estimated = [] }) {
+function SourceFilter({ allSources, active, colorMap, onChange, estimated = [], meta }) {
   if (!allSources || allSources.length < 2) return null;
   const set = new Set(active);
   const est = new Set(estimated);
@@ -198,11 +199,11 @@ function SourceFilter({ allSources, active, colorMap, onChange, estimated = [] }
           onClick={() => toggle(s)}
           title={(est.has(s) ? 'Locally-estimated usage (not provider-billed). ' : '') + (set.has(s) ? 'Click to remove from filter' : 'Click to show only selected sources')}
         >
-          <i style={{ background: colorMap.get(s) }} />{s}{est.has(s) && <sup className="estmark">est</sup>}
+          <i style={{ background: colorMap.get(s) }} />{sourceLabel(s, meta)}{est.has(s) && <sup className="estmark">est</sup>}
         </button>
       ))}
       {set.size > 0 && (
-        <span className="sfnote">showing {Array.from(set).join(' + ')} only</span>
+        <span className="sfnote">showing {Array.from(set).map((s) => sourceLabel(s, meta)).join(' + ')} only</span>
       )}
     </div>
   );
@@ -276,7 +277,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
     : [];
   const sourceRows = period
     ? Object.keys(period.bySource).sort((a, b) => period.bySource[b].cost - period.bySource[a].cost)
-        .map((s) => ({ name: s, ...period.bySource[s], color: colorMaps.src.get(s) }))
+        .map((s) => ({ name: s, label: sourceLabel(s, data.sourceMeta), ...period.bySource[s], color: colorMaps.src.get(s) }))
     : [];
 
   // Limit alerts → desktop notifications (de-duplicated per reset cycle in lib).
@@ -327,7 +328,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
               <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
                 <PeriodSelect periods={periods} value={period.key} onChange={setPeriodKey} />
                 <ExportMenu periodKey={period.key} srcFilter={srcFilter} />
-                <Legend period={period} colorMap={colorMaps.src} single={period.singleSource} />
+                <Legend period={period} colorMap={colorMaps.src} single={period.singleSource} meta={data.sourceMeta} />
               </div>
             </div>
             <div className="sub" style={{ margin: '2px 0 14px' }}>
@@ -340,7 +341,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
             {/* period comes along so the strip can disclose how much of the
                 headline above it the live-only figures actually cover. */}
             <CacheSavings cache={period.cacheSavings} period={period} />
-            <SpendChart period={period} colorMap={colorMaps.src} />
+            <SpendChart period={period} colorMap={colorMaps.src} meta={data.sourceMeta} />
           </Card>
 
           <div className="grid cols-2">
@@ -364,7 +365,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
               <Card delay={0.28}>
                 <h2>By source · {period.label}</h2>
                 <div className="sub" style={{ marginTop: 2, marginBottom: 4 }}>
-                  Single source — <b style={{ color: 'var(--text-2)' }}>{period.sources[0] || 'cli'}</b> accounts for 100% of this period.
+                  Single source — <b style={{ color: 'var(--text-2)' }}>{sourceLabel(period.sources[0] || 'cli', data.sourceMeta)}</b> accounts for 100% of this period.
                 </div>
                 <Sparkline period={period} />
               </Card>
@@ -413,7 +414,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
 
       <Card delay={0.36} hover={false}>
         <h2>Recent sessions</h2>
-        <SessionsTable sessions={data.recentSessions} />
+        <SessionsTable sessions={data.recentSessions} meta={data.sourceMeta} />
       </Card>
 
       <ServerPanel data={data} onStopped={onStopped} gfx={gfx} delay={0.4} />

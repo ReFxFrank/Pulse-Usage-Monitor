@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { money2, tokens, durClock, useTick, makeColorMap } from './lib.js';
+import { money2, tokens, durClock, useTick, makeColorMap, sourceLabel } from './lib.js';
 
 // Compact side overview (#mini) — stacked provider cards sized for a narrow
 // docked window or an installed-app panel: official Claude/Codex windows as
@@ -162,7 +162,7 @@ export function MiniOverview({ data }) {
           {/* The popup shares localStorage with the dashboard, so an active
               source filter carries over — the label must say what it shows. */}
           <div className="minihead">
-            Total spend · {data.sourceFilter && data.sourceFilter.length ? data.sourceFilter.join(' + ') : 'all sources'}
+            Total spend · {data.sourceFilter && data.sourceFilter.length ? data.sourceFilter.map((s) => sourceLabel(s, data.sourceMeta)).join(' + ') : 'all sources'}
           </div>
           <div className="minitabs">
             {[['today', 'Today'], ['yesterday', 'Yesterday'], ['30d', '30 Days']].map(([k, lbl]) => (
@@ -175,7 +175,7 @@ export function MiniOverview({ data }) {
               {slices.length ? slices.map((s) => (
                 <div className="minilegrow" key={s.name}>
                   <i style={{ background: colorMap.get(s.name) }} />
-                  <span className="minilegname">{s.name}</span>
+                  <span className="minilegname">{sourceLabel(s.name, data.sourceMeta)}</span>
                   <span className="minilegval">{money2(s.cost)}</span>
                 </div>
               )) : <div className="minihint">no spend in this window</div>}

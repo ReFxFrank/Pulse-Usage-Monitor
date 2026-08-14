@@ -34,7 +34,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.28.0';
+const PULSE_VERSION = '1.29.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -47,6 +47,11 @@ const AGENT_SOURCES = new Set(['codex', 'gemini', 'cline', 'continue', 'roo']);
 // counts locally rather than reading provider billing). Constant so the "est"
 // badge survives after the live logs are pruned and only the archive remains.
 const KNOWN_ESTIMATE_SOURCES = new Set(['continue']);
+// True when an entry is NOT Claude Code subscription usage (it has its own
+// limits/billing): the fixed agent roster above plus any config-defined custom
+// source (provider 'custom'). Gates the 5h block, selfCheck, and Discord art —
+// the roster alone can't know config-defined names, the provider tag can.
+function nonClaudeEntry(e) { return AGENT_SOURCES.has(e.source) || e.provider === 'custom'; }
 
 // ---------------------------------------------------------------------------
 // LOGGING
@@ -688,6 +693,59 @@ function taskFilesUnder(extDirs) {
 function clineTaskFiles() { return taskFilesUnder(clineExtensionDirs()); }
 function rooTaskFiles() { return taskFilesUnder(rooExtensionDirs()); }
 
+// ---- custom user-defined sources (config `customSources`) ------------------
+// The user's OWN tooling (a local model harness, a homemade agent) appends one
+// JSON object per line to a JSONL log; Pulse reads it READ-ONLY like every
+// other source. Record schema is documented in README "Custom sources".
+// Config row: { name, path, label? } — `name` is the source key everywhere
+// (filters, CSV columns, colors), `path` is a .jsonl file or a directory
+// walked for *.jsonl, `label` is the display name (defaults to the name).
+const CUSTOM_SOURCE_NAME_RE = /^[a-z][a-z0-9_-]{0,23}$/;
+// Names that would collide with (or spoof) a built-in source.
+const CUSTOM_SOURCE_RESERVED = new Set(['cli', 'claude', 'codex', 'gemini', 'cline', 'continue', 'roo']);
+const CUSTOM_SOURCES_MAX = 8;
+function customSourcesConfig() {
+  const raw = readConfig().customSources;
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const row of raw) {
+    if (out.length >= CUSTOM_SOURCES_MAX) break;
+    if (!row || typeof row !== 'object') continue;
+    const name = typeof row.name === 'string' ? row.name.trim() : '';
+    const p = typeof row.path === 'string' ? row.path.trim() : '';
+    if (!CUSTOM_SOURCE_NAME_RE.test(name) || CUSTOM_SOURCE_RESERVED.has(name) || seen.has(name) || !p) continue;
+    seen.add(name);
+    // The label reaches the DOM, CSV headers and the terminal — sanitize like
+    // the plan label: control chars stripped BEFORE the length cap.
+    const label = typeof row.label === 'string'
+      ? row.label.replace(CONTROL_CHARS, '').trim().slice(0, 24) : '';
+    out.push({ name, path: p, label: label || name });
+  }
+  return out;
+}
+// One source's files: the configured path itself when it's a file (any
+// extension — the config names it explicitly), else every *.jsonl under the
+// directory. A missing path yields [] — the harness just hasn't logged yet.
+function customSourceFiles(src) {
+  try {
+    const st = fs.statSync(src.path);
+    if (st.isDirectory()) return walkJsonl(src.path);
+    if (st.isFile()) return [src.path];
+  } catch (_) { /* not created yet */ }
+  return [];
+}
+// Display metadata for custom sources: { key: { label } }, only where the
+// label differs from the raw key (the UI falls back to the key otherwise).
+// Config-derived, so it is identical in filtered and unfiltered builds.
+function sourceMetaForPayload() {
+  const meta = {};
+  for (const src of customSourcesConfig()) {
+    if (src.label !== src.name) meta[src.name] = { label: src.label };
+  }
+  return meta;
+}
+
 // ---------------------------------------------------------------------------
 // §3  RECORD ACCESSORS — read field names via small helpers with fallbacks.
 // Field names have drifted across Claude Code versions; never assume a key
@@ -1259,6 +1317,71 @@ function parseClineFile(filePath, source = 'cline') {
   return { entries, sessionMeta, ultracodeSessions: [], effortEvents: [] };
 }
 
+// Parse one custom-source JSONL file (config `customSources`). Tolerant by
+// design — the writer is the user's own tooling. Per line: `ts` (ISO string,
+// epoch ms, or epoch seconds) is required; `input`/`output`/`cached` are token
+// counts with `cached` a SUBSET of `input` (Gemini convention), so
+// inputTokens = input − cached and cacheRead = cached — tokensOf() sums back
+// to the harness's own total. Dedup: record `id` when present (id-keyed, LAST
+// write wins — a replayed/rewritten request never double-counts), else file
+// path + line index (Continue pattern). Cost: a finite record-level `cost` is
+// trusted verbatim (Cline pattern), else $0 — custom models are typically
+// local, and pricing an unknown model from our tables would invent spend.
+// Either way costFromSource is set so nothing ever re-prices the entry.
+// Malformed lines are skipped; only a failed READ returns null (parseAll
+// keeps prior cached entries and retries next cycle).
+function parseCustomFile(filePath, src) {
+  let text;
+  try { text = fs.readFileSync(filePath, 'utf8'); } catch (_) { return null; }
+  const byId = new Map();
+  const sessionMeta = {};
+  const lines = text.split('\n');
+  const num = (v) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch (_) { continue; }
+    if (!rec || typeof rec !== 'object' || Array.isArray(rec)) continue;
+    let ts;
+    if (typeof rec.ts === 'number' && isFinite(rec.ts)) {
+      // Numeric: epoch ms, or epoch seconds → ms. Unambiguous — an ms value
+      // below 1e12 would be a pre-2001 date, impossible for real usage.
+      ts = rec.ts < 1e12 ? rec.ts * 1000 : rec.ts;
+    } else {
+      ts = Date.parse(rec.ts);
+    }
+    if (!isFinite(ts) || ts <= 0) continue;
+    const input = num(rec.input);
+    const output = num(rec.output);
+    const cached = Math.min(num(rec.cached), input);
+    if (input + output === 0) continue; // nothing measured — not a usage record
+    const id = typeof rec.id === 'string' && rec.id ? rec.id.slice(0, 200) : filePath + ':' + i;
+    const sid = typeof rec.sessionId === 'string' && rec.sessionId
+      ? rec.sessionId.replace(CONTROL_CHARS, '').slice(0, 120) : src.name;
+    const e = agentEntry({
+      ts,
+      provider: 'custom',
+      source: src.name,
+      model: typeof rec.model === 'string' && rec.model
+        ? rec.model.replace(CONTROL_CHARS, '').slice(0, 80) : src.name,
+      inputTokens: input - cached,
+      outputTokens: output,
+      cacheRead: cached,
+      sessionId: sid,
+      project: typeof rec.project === 'string'
+        ? rec.project.replace(CONTROL_CHARS, '').slice(0, 200) : '',
+      key: 'cs:' + src.name + ':' + id,
+    });
+    if (rec.estimate === true) e.estimate = true;
+    e.cost = typeof rec.cost === 'number' && isFinite(rec.cost) && rec.cost >= 0 ? rec.cost : 0;
+    e.costFromSource = true;
+    byId.set(id, e);
+    if (!sessionMeta[sid]) sessionMeta[sid] = { firstUserText: '', project: e.project };
+  }
+  return { entries: Array.from(byId.values()), sessionMeta, ultracodeSessions: [], effortEvents: [] };
+}
+
 // Turn the newest Codex rate_limits snapshot into display buckets. resets_at
 // has been absolute (epoch seconds or ISO) in recent versions and
 // resets_in_seconds (relative to the event) in older ones — handle all three.
@@ -1313,13 +1436,21 @@ function parseAll() {
   const continueFiles = walkJsonl(continueDevDataRoot()).filter((f) => path.basename(f) === 'tokensGenerated.jsonl');
   const clineFiles = clineTaskFiles();
   const rooFiles = rooTaskFiles();
+  // Config-defined custom sources: map each file → its source descriptor. A
+  // path that overlaps an auto-discovered root still parses as the custom
+  // source (explicit config wins — the dispatch below checks this map FIRST).
+  const customByFile = new Map();
+  for (const src of customSourcesConfig()) {
+    for (const f of customSourceFiles(src)) if (!customByFile.has(f)) customByFile.set(f, src);
+  }
+  const customFiles = Array.from(customByFile.keys());
   const walkMs = Date.now() - walkT0;
   const codexSet = new Set(codexFiles);
   const geminiSet = new Set(geminiFiles);
   const continueSet = new Set(continueFiles);
   const clineSet = new Set(clineFiles);
   const rooSet = new Set(rooFiles);
-  const files = claudeFiles.concat(codexFiles, geminiFiles, continueFiles, clineFiles, rooFiles);
+  const files = claudeFiles.concat(codexFiles, geminiFiles, continueFiles, clineFiles, rooFiles, customFiles);
   const liveFiles = new Set(files);
 
   let parsed = 0, skipped = 0, failed = 0;
@@ -1331,7 +1462,9 @@ function parseAll() {
       skipped++;
       continue;
     }
-    const result = codexSet.has(f) ? parseCodexFile(f)
+    const customSrc = customByFile.get(f);
+    const result = customSrc ? parseCustomFile(f, customSrc)
+      : codexSet.has(f) ? parseCodexFile(f)
       : geminiSet.has(f) ? parseGeminiFile(f)
       : continueSet.has(f) ? parseContinueFile(f)
       : clineSet.has(f) ? parseClineFile(f)
@@ -1391,6 +1524,7 @@ function parseAll() {
   if (continueFiles.length) agentBits.push(`${continueFiles.length} continue`);
   if (clineFiles.length) agentBits.push(`${clineFiles.length} cline`);
   if (rooFiles.length) agentBits.push(`${rooFiles.length} roo`);
+  if (customFiles.length) agentBits.push(`${customFiles.length} custom`);
   const agentStr = agentBits.length ? ', ' + agentBits.join(', ') : '';
   console.log(`[pulse] walked ${files.length} file(s) (${claudeFiles.length} claude, ${codexFiles.length} codex${agentStr}) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
   return {
@@ -1564,10 +1698,10 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   // ---- 5-hour blocks + active block ----
   // Claude Code entries only: the 5h window is the Claude Code subscription's
   // rate-limit concept. Every other ingested agent (Codex, Gemini, Cline,
-  // Continue) has its own separate limits/billing and must not distort the
-  // reset countdown — gate by SOURCE, not provider (a Cline turn on a Claude
-  // model is still not Claude Code usage).
-  const claudeAsc = asc.filter((e) => !AGENT_SOURCES.has(e.source));
+  // Continue, custom sources) has its own separate limits/billing and must not
+  // distort the reset countdown — gate by SOURCE, not model provider (a Cline
+  // turn on a Claude model is still not Claude Code usage).
+  const claudeAsc = asc.filter((e) => !nonClaudeEntry(e));
   const rawBlocks = computeBlocks(claudeAsc);
   const blocks = rawBlocks.map(summarizeBlock);
   let activeBlock = null;
@@ -1817,10 +1951,11 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   const ACTIVE_MS = 15 * 60 * 1000;
   let activeProvider = null;
   if (asc.length && now - asc[asc.length - 1].ts <= ACTIVE_MS) {
-    // Only Claude Code / Codex have dedicated Discord art. The other agents map
-    // to null (Pulse art) rather than falsely claiming "Using Claude Code".
-    const lastSrc = asc[asc.length - 1].source;
-    activeProvider = lastSrc === 'codex' ? 'codex' : AGENT_SOURCES.has(lastSrc) ? null : 'claude';
+    // Only Claude Code / Codex have dedicated Discord art. The other agents
+    // (custom sources included) map to null (Pulse art) rather than falsely
+    // claiming "Using Claude Code".
+    const last = asc[asc.length - 1];
+    activeProvider = last.source === 'codex' ? 'codex' : nonClaudeEntry(last) ? null : 'claude';
   }
 
   // Activity heatmap — cost/tokens/messages by local weekday (0=Sun … 6=Sat) ×
@@ -1856,6 +1991,10 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     planValue: computePlanValue(periods, now),
     allSources,
     allModels,
+    // Display metadata for config-defined custom sources: { key: { label } }.
+    // Keys everywhere else (filters, CSV columns, colors) stay the raw name;
+    // config-derived, so identical in filtered and unfiltered builds.
+    sourceMeta: sourceMetaForPayload(),
     // Union live-flagged estimate sources with the known set, over allSources —
     // so a source like Continue stays badged "est" even after its live logs are
     // pruned and only the (flag-less) archive remains.
@@ -2261,7 +2400,7 @@ function selfCheck(payload, asc, rawBlocks) {
   // every block's entries ⊆ Claude entries (blocks are Claude-only; Codex has
   // its own limit windows and is excluded from block reconstruction)
   const blockEntryCount = rawBlocks.reduce((a, b) => a + b.entries.length, 0);
-  const claudeCount = asc.reduce((a, e) => a + (AGENT_SOURCES.has(e.source) ? 0 : 1), 0);
+  const claudeCount = asc.reduce((a, e) => a + (nonClaudeEntry(e) ? 0 : 1), 0);
   if (blockEntryCount !== claudeCount) {
     issues.push(`block entries (${blockEntryCount}) != claude entries (${claudeCount})`);
   }

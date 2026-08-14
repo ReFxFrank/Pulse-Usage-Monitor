@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ACCENT, money, money2, tokens, dayLabel } from './lib.js';
+import { ACCENT, money, money2, tokens, dayLabel, sourceLabel } from './lib.js';
 
 // measure a container's width (responsive SVG without distortion)
 function useMeasure() {
@@ -111,7 +111,7 @@ export function Sparkline({ period, height = 92 }) {
 }
 
 // ---------- 30-day / month stacked bar chart ----------
-export function SpendChart({ period, colorMap }) {
+export function SpendChart({ period, colorMap, meta }) {
   const [ref, W] = useMeasure();
   const tipRef = useRef(null);
   const H = 214;
@@ -140,7 +140,7 @@ export function SpendChart({ period, colorMap }) {
       const c = (b.bySource && b.bySource[s]) || 0;
       if (c <= 0) return;
       const col = single ? ACCENT : colorMap.get(s);
-      rows += `<div class="tr"><span><i style="background:${col}"></i>${escapeHtml(s)}</span><span class="tv">${money2(c)}</span></div>`;
+      rows += `<div class="tr"><span><i style="background:${col}"></i>${escapeHtml(sourceLabel(s, meta))}</span><span class="tv">${money2(c)}</span></div>`;
     });
     if (!rows) rows = '<div class="tr" style="color:var(--text-3)">no spend</div>';
     el.innerHTML = `<div class="td">${b.date}</div>${rows}<div class="tr tot"><span>total</span><span class="tv">${money2(b.total)}</span></div><div class="tr" style="color:var(--text-3)"><span>tokens</span><span class="tv">${tokens(b.tokens)}</span></div>`;
