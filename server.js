@@ -5012,12 +5012,15 @@ function trayScript(port) {
 
 function startTray(port) {
   trayDesired = true;
-  if (process.platform !== 'win32') {
-    console.log('[pulse] --tray is Windows-only (notification-area icon) — ignored on this OS.');
-    return;
-  }
+  // Test hook FIRST, before the platform gate: its log line is the e2e proof
+  // that a boot path reached startTray at all, and the suites run on Linux —
+  // behind the win32 check the boot-path regression guard could never fire.
   if (process.env.PULSE_NO_TRAY_SPAWN) {
     console.log('[pulse] tray spawn suppressed (PULSE_NO_TRAY_SPAWN — test hook)');
+    return;
+  }
+  if (process.platform !== 'win32') {
+    console.log('[pulse] --tray is Windows-only (notification-area icon) — ignored on this OS.');
     return;
   }
   const scriptPath = path.join(pulseHome(), 'tray.ps1');
