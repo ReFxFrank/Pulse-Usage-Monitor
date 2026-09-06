@@ -37,6 +37,15 @@ const lines = [
   U(20, "sess-R", "<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args></command-args>"),
   U(19, "sess-R", "<local-command-stdout>Kept effort level as max</local-command-stdout>"),
   A(18, "sess-R", 5),
+  // Session S: Claude Code >= 2.1.212 records the level ON the assistant entry
+  // (top-level `effort`) — no echo anywhere, the recorded field alone must chip
+  Object.assign(A(12, "sess-S", 6), { effort: "xhigh" }),
+  // Session T: an echo says high, but one entry RECORDS medium — the recorded
+  // per-message level is authoritative there; the echo fills the unrecorded one
+  U(10, "sess-T", "<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args></command-args>"),
+  U(9, "sess-T", "<local-command-stdout>Set effort level to high (this session only)</local-command-stdout>"),
+  Object.assign(A(8, "sess-T", 7), { effort: "Medium" }), // case-normalized
+  A(7, "sess-T", 8),
 ];
 fs.writeFileSync(process.argv[1] + "/projects/demo/s.jsonl",
   lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
@@ -62,6 +71,10 @@ ok(P && (P.efforts || []).includes("high"), "P: picker echo with EMPTY args yiel
 ok(P && P.ultracode === true, "P: ultracode picker echo flags ULTRA");
 ok(Q && (Q.efforts || []).length === 0 && !Q.ultracode, "Q: quoted words in a real prompt forge NOTHING — got " + JSON.stringify(Q && Q.efforts));
 ok(R && (R.efforts || []).includes("max"), "R: Kept-effort echo yields max — got " + JSON.stringify(R && R.efforts));
+const S2 = sess["sess-S"], T2 = sess["sess-T"];
+ok(S2 && (S2.efforts || []).includes("xhigh"), "S: recorded per-entry effort field chips with NO echo — got " + JSON.stringify(S2 && S2.efforts));
+ok(T2 && (T2.efforts || []).includes("medium") && (T2.efforts || []).includes("high"),
+   "T: recorded level wins on its own entry, echo fills the unrecorded one — got " + JSON.stringify(T2 && T2.efforts));
 process.exit(fail);
 ' "$TMP"
 RES=$?

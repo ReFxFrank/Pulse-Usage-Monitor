@@ -33,16 +33,31 @@ lines.push({ type: "assistant", timestamp: iso(now - 40 * 60e3),
   message: { id: "mc1", model: "claude-opus-4-8",
     usage: { input_tokens: 1000000, output_tokens: 1000000, cache_read_input_tokens: 1000000,
       cache_creation: { ephemeral_5m_input_tokens: 1000000, ephemeral_1h_input_tokens: 1000000 } } } });
-// Sonnet 5 intro price is keyed on the ENTRY date (priceFor), never "now":
-// a July-2026 entry bills intro 2/10 (=12 for 1M+1M), a post-2026-08-31 entry
-// bills standard 3/15 (=18). Pinned dates -> asserted via their calendar-month
-// periods, so this stays valid no matter when the suite runs.
+// Sonnet 5: the $2/$10 launch price was made PERMANENT on 2026-08-11 (the
+// scheduled 2026-09-01 step-up to $3/$15 never happened), so a July entry AND
+// a September entry both bill 2/10 (=12 for 1M+1M). Pinned dates -> asserted
+// via their calendar-month periods, so this stays valid whenever the suite runs.
 lines.push({ type: "assistant", timestamp: "2026-07-15T12:00:00.000Z",
   sessionId: "intro-s", requestId: "ri1", cwd: "/p",
   message: { id: "mi1", model: "claude-sonnet-5", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
 lines.push({ type: "assistant", timestamp: "2026-09-15T12:00:00.000Z",
   sessionId: "intro-s", requestId: "ri2", cwd: "/p",
   message: { id: "mi2", model: "claude-sonnet-5", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+// Fable 5.1: $10/$50 like Fable 5, but cache READS at 0.025x ($0.25/M) — 1M
+// in + 1M out + 1M cache read = 10 + 50 + 0.25 = 60.25 (NOT 61 off the Fable 5
+// 0.10x). Proves the per-row cacheReadMult is applied, not the global 0.10.
+lines.push({ type: "assistant", timestamp: "2026-09-16T12:00:00.000Z",
+  sessionId: "f51-s", requestId: "rf51", cwd: "/p",
+  message: { id: "mf51", model: "claude-fable-5-1", usage: { input_tokens: 1000000, output_tokens: 1000000, cache_read_input_tokens: 1000000 } } });
+// Mythos 5 (Glasswing twin of Fable 5): $10/$50 -> 1M+1M = 60, and it must
+// price SILENTLY (no unknown-model warning) instead of the $3/$15 default.
+lines.push({ type: "assistant", timestamp: "2026-09-16T13:00:00.000Z",
+  sessionId: "my5-s", requestId: "rmy5", cwd: "/p",
+  message: { id: "mmy5", model: "claude-mythos-5", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+// inference_geo "us": every token category at 1.1x — opus-4-6 1M+1M = 30 -> 33.
+lines.push({ type: "assistant", timestamp: "2026-09-16T14:00:00.000Z",
+  sessionId: "geo-s", requestId: "rgeo", cwd: "/p",
+  message: { id: "mgeo", model: "claude-opus-4-6", usage: { input_tokens: 1000000, output_tokens: 1000000, inference_geo: "us" } } });
 // Opus 5 standard vs fast mode, split across months so each is asserted on its
 // own: standard bills 5/25 (=30 for 1M+1M), fast (usage.speed "fast", the
 // `/fast` toggle) bills the 10/50 premium (=60). Same fixture shape proves the
@@ -157,7 +172,13 @@ const mon = (k) => (s.periods || []).find((p) => p.key === k) || {};
 const jul = (mon("2026-07").byModel || {})["claude-sonnet-5"];
 const sep = (mon("2026-09").byModel || {})["claude-sonnet-5"];
 ok(jul && Math.abs(jul.cost - 12) < 0.005, "sonnet-5 July 2026 entry at intro 2/10 = 12 (got " + (jul ? jul.cost.toFixed(2) : "missing") + ")");
-ok(sep && Math.abs(sep.cost - 18) < 0.005, "sonnet-5 September 2026 entry at standard 3/15 = 18 (got " + (sep ? sep.cost.toFixed(2) : "missing") + ")");
+ok(sep && Math.abs(sep.cost - 12) < 0.005, "sonnet-5 September 2026 entry ALSO at the now-permanent 2/10 = 12 (got " + (sep ? sep.cost.toFixed(2) : "missing") + ")");
+const f51 = (mon("2026-09").byModel || {})["claude-fable-5-1"];
+ok(f51 && Math.abs(f51.cost - 60.25) < 0.005, "fable-5-1: per-row 0.025x cache read -> 10+50+0.25 = 60.25 (got " + (f51 ? f51.cost.toFixed(2) : "missing") + ")");
+const my5 = (mon("2026-09").byModel || {})["claude-mythos-5"];
+ok(my5 && Math.abs(my5.cost - 60) < 0.005, "mythos-5 priced at the Fable tier 10/50 = 60 (got " + (my5 ? my5.cost.toFixed(2) : "missing") + ")");
+const geo = (mon("2026-09").byModel || {})["claude-opus-4-6"];
+ok(geo && Math.abs(geo.cost - 33) < 0.005, "inference_geo us: opus-4-6 1M+1M = 30 x 1.1 = 33 (got " + (geo ? geo.cost.toFixed(2) : "missing") + ")");
 // Opus 5: standard 5/25, and the fast-mode premium 10/50 applied off
 // usage.speed — the same 1M+1M entry must cost exactly double when fast.
 const o5std = (mon("2026-05").byModel || {})["claude-opus-5"];

@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.30.0
+
+- **Anthropic pricing refresh (verified 2026-09 against platform.claude.com):**
+  **Sonnet 5** — the $2/$10 launch price was made permanent on 2026-08-11
+  (the scheduled 2026-09-01 step-up to $3/$15 never happened); Pulse had been
+  billing September usage at $3/$15 — fixed. **Fable 5.1 / Mythos 5.1**
+  (2026-09-01): own rows — same $10/$50, but cache READS bill at $0.25/M
+  (0.025×, not the standard 0.10×) via a new per-row `cacheReadMult`;
+  previously prefix-matched to the Fable 5 row, over-billing cache reads 4×.
+  **Mythos 5** and the deprecated **Mythos Preview** now price at the Fable
+  tier instead of the $3/$15 unknown-model default.
+- **US-only inference surcharge:** `usage.inference_geo === "us"` bills every
+  token category at 1.1× on 4.6+ models (Claude Code applies it in `/cost`
+  since 2.1.239); Pulse now applies it too — to token terms only, never to
+  per-call web search — and scales cache savings / write premiums alike.
+- **Effort chips from the transcript itself:** Claude Code ≥ 2.1.212 records
+  the reasoning-effort level on each assistant entry; Pulse reads it directly
+  (authoritative per message) and falls back to the `/effort` echo and hook
+  join only for entries without it. Ultracode is still detected from events.
+- **Account meters — undisclosed buckets hidden:** Anthropic's usage endpoint
+  now carries rotating, undocumented codename keys (`nimbus_quill`,
+  `cinder_cove`, …) that sit at 0% with no reset. Pulse no longer renders
+  them as "Claude · nimbus quill" 0% rows; an undisclosed bucket appears only
+  once it carries real usage. New documented key `seven_day_cowork` gets a
+  proper "weekly · Cowork" label.
+- Model-family classifier recognizes bare `mythos-*` ids as Anthropic.
+- Meshy suite: the fixture now clamps its week tasks to the current calendar
+  month, so it no longer fails when run on the 1st–7th (its month == week
+  self-check tripped on a task that fell into the previous month).
+
 ## v1.29.0
 
 - **Custom sources — bring your own agent.** Declare `customSources` in

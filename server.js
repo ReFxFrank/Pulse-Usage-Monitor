@@ -34,7 +34,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.29.0';
+const PULSE_VERSION = '1.30.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -184,7 +184,7 @@ function once(fn) {
 // On a Pro/Max subscription these are NOT a bill — they express relative
 // usage. This is stated in the UI.
 //
-// Verified against Anthropic list pricing (docs.claude.com) — 2026-07.
+// Verified against Anthropic list pricing (platform.claude.com) — 2026-09.
 // This object is the single source of truth: updating a price is a one-line
 // edit here.
 // ---------------------------------------------------------------------------
@@ -198,16 +198,27 @@ const PRICING = {
   // rejects the flag and 4.6 runs standard and bills standard, so neither
   // carries a fast row. Cache multipliers stack on top of the fast rate,
   // which falls out of pricing cache tokens off price.input (per the docs).
+  // cacheReadMult = per-row cache-READ multiplier when a model departs from the
+  // standard 0.10×: Fable 5.1 / Mythos 5.1 bill cache reads at $0.25/M (0.025×).
+  // Mythos = the Glasswing-only twins of Fable (same list price); the bare
+  // 'claude-mythos' row catches the deprecated claude-mythos-preview, which has
+  // no published price — priced at the tier every Mythos model sits in rather
+  // than the $3/$15 default it would otherwise fall to.
+  'claude-fable-5-1':  { input: 10, output: 50, cacheReadMult: 0.025 },
+  'claude-mythos-5-1': { input: 10, output: 50, cacheReadMult: 0.025 },
   'claude-fable-5':    { input: 10, output: 50 },
+  'claude-mythos-5':   { input: 10, output: 50 },
+  'claude-mythos':     { input: 10, output: 50 },
   'claude-opus-5':     { input: 5,  output: 25, fastInput: 10, fastOutput: 50 },
   'claude-opus-4-8':   { input: 5,  output: 25, fastInput: 10, fastOutput: 50 },
   'claude-opus-4-7':   { input: 5,  output: 25 },
   'claude-opus-4-6':   { input: 5,  output: 25 },
   'claude-opus-4-5':   { input: 5,  output: 25 },
-  // Sonnet 5 carries an introductory price valid through 2026-08-31; after
-  // that it reverts to standard. This is applied per-entry, keyed on the
-  // entry's OWN date (see priceFor), never on "now".
-  'claude-sonnet-5':   { input: 3,  output: 15, introInput: 2, introOutput: 10, introUntil: '2026-08-31' },
+  // Sonnet 5 launched at an "introductory" $2/$10 through 2026-08-31; on
+  // 2026-08-11 Anthropic made that the permanent list price (the scheduled
+  // $3/$15 step-up never happened), so the row is plain. priceFor still
+  // honours intro* fields for any future time-limited launch price.
+  'claude-sonnet-5':   { input: 2,  output: 10 },
   'claude-sonnet-4-6': { input: 3,  output: 15 },
   'claude-sonnet-4-5': { input: 3,  output: 15 },
   'claude-haiku-4-5':  { input: 1,  output: 5 },
@@ -304,15 +315,34 @@ function priceFor(model, ts, speed) {
     logUnknownModel(model);
     p = PRICING.__default__;
   }
+  // Cache reads bill at the ROW's multiplier when it has one (Fable/Mythos 5.1
+  // = 0.025×), else the standard 0.10× — carried on the resolved price so every
+  // cost path (cost, standard baseline, cache economics) agrees.
+  const cacheReadMult = p.cacheReadMult != null ? p.cacheReadMult : CACHE_READ_MULT;
   // Fast mode is a per-request premium, so it wins over the (model-level)
   // introductory price — no current model carries both.
   if (speed === 'fast' && p.fastInput != null) {
-    return { input: p.fastInput, output: p.fastOutput };
+    return { input: p.fastInput, output: p.fastOutput, cacheReadMult };
   }
   if (p.introUntil && localDateStr(ts) <= p.introUntil) {
-    return { input: p.introInput, output: p.introOutput };
+    return { input: p.introInput, output: p.introOutput, cacheReadMult };
   }
-  return { input: p.input, output: p.output };
+  return { input: p.input, output: p.output, cacheReadMult };
+}
+
+// Token-category cost on the Claude path at a resolved price row. Cache reads
+// use the row's multiplier. `usage.inference_geo === "us"` (US-only inference,
+// 4.6+ models) bills EVERY token category at 1.1× — the surcharge applies to
+// the token terms only, never to per-call server tools (web search).
+const INFERENCE_GEO_US_MULT = 1.1;
+function claudeTokenCost(e, price) {
+  const tokens =
+    (e.inputTokens  / 1e6) * price.input +
+    (e.outputTokens / 1e6) * price.output +
+    (e.cacheWrite5m / 1e6) * price.input * CACHE_WRITE_5M_MULT +
+    (e.cacheWrite1h / 1e6) * price.input * CACHE_WRITE_1H_MULT +
+    (e.cacheRead    / 1e6) * price.input * price.cacheReadMult;
+  return e.geoUs ? tokens * INFERENCE_GEO_US_MULT : tokens;
 }
 
 // §5 per-entry cost. Cache-creation tokens without a TTL breakdown are treated
@@ -337,15 +367,8 @@ function costForEntry(e) {
       (e.cacheRead    / 1e6) * cachedPrice
     );
   }
-  const price = priceFor(e.model, e.ts, e.speed);
-  return (
-    (e.inputTokens  / 1e6) * price.input +
-    (e.outputTokens / 1e6) * price.output +
-    (e.cacheWrite5m / 1e6) * price.input * CACHE_WRITE_5M_MULT +
-    (e.cacheWrite1h / 1e6) * price.input * CACHE_WRITE_1H_MULT +
-    (e.cacheRead    / 1e6) * price.input * CACHE_READ_MULT +
-    (e.webSearches  / 1000) * WEB_SEARCH_PER_1K
-  );
+  return claudeTokenCost(e, priceFor(e.model, e.ts, e.speed)) +
+    (e.webSearches / 1000) * WEB_SEARCH_PER_1K;
 }
 
 // What prompt caching actually bought on ONE entry, at that entry's own price
@@ -375,13 +398,14 @@ function cacheEconomicsForEntry(e) {
     return { read: p.input > 0 ? read : 0, saved: (read / 1e6) * (p.input - cached), writePremium: 0 };
   }
   const price = priceFor(e.model, e.ts, e.speed);
+  const geo = e.geoUs ? INFERENCE_GEO_US_MULT : 1; // the surcharge scales savings and premiums alike
   return {
     // Same zero-price rule as above — covers "<synthetic>" and the free
     // glm-*-flash rows, whose reads are real tokens but worth nothing saved.
     read: price.input > 0 ? read : 0,
-    saved: (read / 1e6) * price.input * (1 - CACHE_READ_MULT),
-    writePremium: (e.cacheWrite5m / 1e6) * price.input * (CACHE_WRITE_5M_MULT - 1)
-                + (e.cacheWrite1h / 1e6) * price.input * (CACHE_WRITE_1H_MULT - 1),
+    saved: (read / 1e6) * price.input * (1 - price.cacheReadMult) * geo,
+    writePremium: ((e.cacheWrite5m / 1e6) * price.input * (CACHE_WRITE_5M_MULT - 1)
+                 + (e.cacheWrite1h / 1e6) * price.input * (CACHE_WRITE_1H_MULT - 1)) * geo,
   };
 }
 
@@ -390,15 +414,8 @@ function cacheEconomicsForEntry(e) {
 // fast mode is an Anthropic per-request speed tier, and no other provider's
 // entries ever carry speed === 'fast'.
 function standardCostForEntry(e) {
-  const price = priceFor(e.model, e.ts, 'standard');
-  return (
-    (e.inputTokens  / 1e6) * price.input +
-    (e.outputTokens / 1e6) * price.output +
-    (e.cacheWrite5m / 1e6) * price.input * CACHE_WRITE_5M_MULT +
-    (e.cacheWrite1h / 1e6) * price.input * CACHE_WRITE_1H_MULT +
-    (e.cacheRead    / 1e6) * price.input * CACHE_READ_MULT +
-    (e.webSearches  / 1000) * WEB_SEARCH_PER_1K
-  );
+  return claudeTokenCost(e, priceFor(e.model, e.ts, 'standard')) +
+    (e.webSearches / 1000) * WEB_SEARCH_PER_1K;
 }
 
 // ---------------------------------------------------------------------------
@@ -901,13 +918,16 @@ function normalize(rec) {
     provider: 'anthropic',
     model: intern(msg.model || 'unknown'),
     source: intern(rec.entrypoint || 'cli'), // §3.4 — default cli when absent
-    // Execution mode as recorded by Claude Code. NOTE: reasoning effort
-    // (high/xhigh/max) and "ultracode" are request-time settings NOT written to
-    // the transcript — they are recovered separately from the effort sidecar
-    // (see --effort-setup) and joined on in annotateModes(). `speed` (fast vs
-    // standard) and `service_tier` are the only runtime modes logged here.
+    // Execution mode as recorded by Claude Code. `speed` (fast vs standard)
+    // and `service_tier` live in usage. Reasoning effort: Claude Code ≥ 2.1.212
+    // records it per assistant entry (top-level `effort`, captured below as
+    // parseEffort); older transcripts lack it and "ultracode" is never logged —
+    // both are recovered from the effort sidecar / echoes in annotateModes().
     speed: intern(u.speed || 'standard'),
     serviceTier: intern(u.service_tier || 'standard'),
+    // US-only inference (`inference_geo: "us"`) bills all token categories at
+    // 1.1× on 4.6+ models — applied in claudeTokenCost. Absent/other = 1×.
+    geoUs: u.inference_geo === 'us',
     inputTokens: num(u.input_tokens),
     outputTokens: num(u.output_tokens),
     cacheWrite5m,
@@ -920,8 +940,17 @@ function normalize(rec) {
     // never read again — retaining two unique strings per entry was pure RSS.
     key: dedupKey(rec),
   };
+  const recorded = recordedEffort(rec.effort);
+  if (recorded) e.parseEffort = recorded; // authoritative for this message — see annotateModes
   e.cost = costForEntry(e);
   return e;
+}
+// The per-message reasoning-effort level Claude Code ≥ 2.1.212 writes on each
+// assistant transcript entry (a short lowercase word: low/medium/high/xhigh/max).
+function recordedEffort(v) {
+  if (typeof v !== 'string') return undefined;
+  const s = v.trim().toLowerCase();
+  return /^[a-z]{1,12}$/.test(s) ? intern(s) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1685,7 +1714,11 @@ function annotateModes(entriesAsc, modesBySession, ultracodeSessions) {
         if (r.ts <= e.ts) chosen = r; else break;
       }
       if (chosen) {
-        effort = chosen.effort;
+        // A parse-time recorded level (Codex turn_context, Claude Code ≥ 2.1.212
+        // per-message `effort`) is authoritative for that entry; the sidecar /
+        // echo events only fill the gaps. Ultracode is never recorded, so it
+        // always comes from the events.
+        if (!e.parseEffort) effort = chosen.effort;
         if (chosen.ultracode) ultra = true;
       }
     }
@@ -3465,6 +3498,7 @@ const METER_LABELS = {
   seven_day_opus: 'Claude · weekly · Opus',
   seven_day_sonnet: 'Claude · weekly · Sonnet',
   seven_day_oauth_apps: 'Claude · weekly · apps',
+  seven_day_cowork: 'Claude · weekly · Cowork',
 };
 
 // Normalize one usage bucket from the API response. utilization has been seen
@@ -3475,6 +3509,11 @@ function parseMeterBucket(key, v) {
   let u = v.utilization;
   if (typeof u !== 'number' || !isFinite(u)) return null;
   const pct = u <= 1 ? u * 100 : u;
+  // Undisclosed top-level keys — rotating codenames (`nimbus_quill`,
+  // `cinder_cove`, `omelette_promotional`…) Anthropic has never documented,
+  // usually at 0 with no reset — stay hidden until they carry real usage, so
+  // the card doesn't fill with meaningless 0% rows. Known keys always render.
+  if (!METER_LABELS[key] && !(pct > 0)) return null;
   let resetsAt = null;
   if (v.resets_at) {
     const t = typeof v.resets_at === 'number' ? v.resets_at * (v.resets_at < 1e12 ? 1000 : 1) : Date.parse(v.resets_at);

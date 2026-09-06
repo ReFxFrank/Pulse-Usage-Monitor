@@ -87,6 +87,13 @@ if (m && m.buckets) {
   const opusRows = m.buckets.filter((b) => /weekly · Opus/i.test(b.label));
   ok(opusRows.length === 1 && opusRows[0].key === "seven_day_opus",
      "limits[] Opus deduped against legacy seven_day_opus (" + opusRows.length + " row)");
+  ok(!m.buckets.some((b) => b.key === "nimbus_quill" || b.key === "cinder_cove"),
+     "undisclosed codename buckets at 0% stay hidden");
+  const tang = m.buckets.find((b) => b.key === "tangelo");
+  ok(tang && Math.abs(tang.pct - 42) < 0.01 && tang.label === "Claude · tangelo",
+     "an undisclosed bucket WITH usage still shows (label=" + (tang && tang.label) + " pct=" + (tang && tang.pct) + ")");
+  const cw = m.buckets.find((b) => b.key === "seven_day_cowork");
+  ok(cw && cw.label === "Claude · weekly · Cowork", "seven_day_cowork labelled (got " + (cw && cw.label) + ")");
   ok(!m.buckets.some((b) => /Nope|apps|Broken/i.test(b.label)),
      "wrong-kind / surface-scoped / malformed limits entries ignored");
   ok(m.buckets[0].key === "five_hour" && m.buckets[1].key === "seven_day",

@@ -60,7 +60,11 @@ cat > "$TMP/gen-a.js" <<'GENA'
 //        where N = min(20, dayOfMonth - 1), included only when N >= 8.
 //        (Run on the 1st-8th of a month there is no day that is both >6 days
 //        back and still inside this calendar month, so t6 is dropped and
-//        month = week = 45.)
+//        month = week = 45. Likewise the week offsets 1/3/6 are CLAMPED to
+//        the 1st of the month — on the 1st-7th some of them would otherwise
+//        land in last month and break month == week. Clamped tasks share a
+//        day (sums unchanged); on the 1st they land on today, so `today` is
+//        derived from the placement rather than fixed at 15.)
 //
 // byType: preview = 5 + 20 + 3 + 100 = 128 over 4 tasks
 //         refine  = 10 + 7           =  17 over 2 tasks   (sum 145 = allTime)
@@ -86,9 +90,14 @@ const add = (id, type, credits, ts) => tasks.push({
 });
 add('t1', 'text_to_3d_preview', 5, todayTs);
 add('t2', 'text_to_3d_refine', 10, todayTs);
-add('t3', 'text_to_3d_preview', 20, noonBack(1));
-add('t4', 'text_to_3d_refine', 7, noonBack(3));
-add('t5', 'text_to_3d_preview', 3, noonBack(6));
+// Week offsets never leave the current calendar month (see the comment above).
+// A task clamped onto offset 0 uses todayTs, not noon — noon may still be in
+// the future when the suite runs in the morning.
+const clampOff = (off) => Math.min(off, now.getDate() - 1);
+const at = (off) => (clampOff(off) === 0 ? todayTs : noonBack(clampOff(off)));
+add('t3', 'text_to_3d_preview', 20, at(1));
+add('t4', 'text_to_3d_refine', 7, at(3));
+add('t5', 'text_to_3d_preview', 3, at(6));
 const oldOff = Math.min(20, now.getDate() - 1);
 if (oldOff >= 8) add('t6', 'text_to_3d_preview', 100, noonBack(oldOff));
 
@@ -101,7 +110,8 @@ const week = sum((t) => dayIndex(t.created_at) <= 6);
 const month = sum((t) => { const d = new Date(t.created_at); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); });
 const allTime = sum(() => true);
 const expMonth = oldOff >= 8 ? 145 : 45;
-if (today !== 15 || week !== 45 || month !== expMonth || allTime !== month) {
+const expToday = 15 + [[20, 1], [7, 3], [3, 6]].reduce((a, [c, o]) => a + (clampOff(o) === 0 ? c : 0), 0);
+if (today !== expToday || week !== 45 || month !== expMonth || allTime !== month) {
   throw new Error('fixture arithmetic drifted from the comment: ' + JSON.stringify({ today, week, month, allTime }));
 }
 

@@ -351,8 +351,8 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, srcFilter, onStop
                 <InfoTip
                   text={
                     data.modesLogged
-                      ? 'Chips show the reasoning effort (low → max, plus ultracode) from /effort commands in your session transcripts — and from Pulse’s optional hook — plus execution speed when fast mode was used.'
-                      : 'Effort chips appear when a session sets a level with /effort (Pulse reads those commands from the transcripts automatically) or via Pulse’s optional hook (--effort-setup). Ultracode is also detected from prompt text.'
+                      ? 'Chips show the reasoning effort (low → max, plus ultracode): Claude Code ≥ 2.1.212 records the level on each message; older sessions come from /effort commands in the transcripts and from Pulse’s optional hook. Plus execution speed when fast mode was used.'
+                      : 'Effort chips appear from the level Claude Code ≥ 2.1.212 records on each message, from /effort commands in older transcripts, or via Pulse’s optional hook (--effort-setup). Ultracode is also detected from prompt text.'
                   }
                 >
                   <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>

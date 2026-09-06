@@ -9,6 +9,13 @@ http.createServer((q, s) => {
       seven_day: { utilization: 61, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() },
       seven_day_opus: { utilization: 0.88, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() },
       extra_unknown_key: { something: true },
+      // Undisclosed rotating codename buckets Anthropic never documented: at 0
+      // with no reset they must stay HIDDEN; one carrying real usage must show.
+      nimbus_quill: { utilization: 0.0, resets_at: null },
+      cinder_cove: { utilization: 0, resets_at: null },
+      tangelo: { utilization: 0.42, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() },
+      // A documented newer key gets a proper label
+      seven_day_cowork: { utilization: 0.1, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() },
       limits: [
         // the real thing: per-model weekly window
         { kind: 'weekly_scoped', group: 'g', percent: 76, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString(),
