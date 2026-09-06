@@ -32,7 +32,8 @@ fs.writeFileSync(G+"/tmp/projABC/chats/session-1.jsonl", [
 ].map(JSON.stringify).join("\n")+"\n");
 
 // --- Continue: dev_data/<ver>/tokensGenerated.jsonl (envelope form) ---
-// gpt-5.6-sol ($5/$30). prompt 0.2M, generated 0.1M -> cost = 0.2*5 + 0.1*30 = 4.00 ; tokens 0.3M
+// gpt-5.6-sol ($4/$20 since the 2026-08-21 cut; the entry is dated "now").
+// prompt 0.2M, generated 0.1M -> cost = 0.2*4 + 0.1*20 = 2.80 ; tokens 0.3M
 fs.writeFileSync(C+"/dev_data/0.1/tokensGenerated.jsonl", [
   { name:"tokensGenerated", timestamp: iso(8),
     data:{ model:"gpt-5.6-sol", provider:"openai", promptTokens:200000, generatedTokens:100000 } },
@@ -107,12 +108,12 @@ const per=(s.periods||[]).filter(p=>p.bySource&&p.bySource.gemini).sort((a,b)=>O
 ok(!!per, "found a period with the agent sources ("+(per&&per.label)+")");
 const bs=per?per.bySource:{}, bm=per?per.byModel:{};
 ok(near(bs.gemini&&bs.gemini.cost,8.84), "gemini cost = 8.84 (got "+(bs.gemini&&bs.gemini.cost)+")");
-ok(near(bs.continue&&bs.continue.cost,4.00), "continue cost = 4.00 (got "+(bs.continue&&bs.continue.cost)+")");
+ok(near(bs.continue&&bs.continue.cost,2.80), "continue cost = 2.80 at the current Sol rate (got "+(bs.continue&&bs.continue.cost)+")");
 ok(near(bs.cline&&bs.cline.cost,2.34), "cline uses its OWN recorded cost 2.34, not re-priced (got "+(bs.cline&&bs.cline.cost)+")");
 ok(bs.gemini&&bs.gemini.tokens===1600000, "gemini tokens 1.6M, dup id counted once (got "+(bs.gemini&&bs.gemini.tokens)+")");
 ok(bs.cline&&bs.cline.tokens===750000, "cline tokens 750k (got "+(bs.cline&&bs.cline.tokens)+")");
 ok(bm["gemini-3-pro"]&&near(bm["gemini-3-pro"].cost,8.84), "by-model gemini-3-pro priced via Google table");
-ok(bm["gpt-5.6-sol"]&&near(bm["gpt-5.6-sol"].cost,4.00), "by-model gpt-5.6-sol (Continue) priced via OpenAI table");
+ok(bm["gpt-5.6-sol"]&&near(bm["gpt-5.6-sol"].cost,2.80), "by-model gpt-5.6-sol (Continue) priced via OpenAI table");
 ok(bm["claude-opus-4-8"]&&near(bm["claude-opus-4-8"].cost,2.34), "by-model opus (Cline) = recorded cost");
 // Roo: recorded costs verbatim; model precedence record > metadata > unknown.
 ok(near(bs.roo&&bs.roo.cost,1.96), "roo uses its OWN recorded costs 1.96 (got "+(bs.roo&&bs.roo.cost)+")");

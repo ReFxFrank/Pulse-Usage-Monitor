@@ -4,13 +4,35 @@
 
 - **Anthropic pricing refresh (verified 2026-09 against platform.claude.com):**
   **Sonnet 5** — the $2/$10 launch price was made permanent on 2026-08-11
-  (the scheduled 2026-09-01 step-up to $3/$15 never happened); Pulse had been
-  billing September usage at $3/$15 — fixed. **Fable 5.1 / Mythos 5.1**
-  (2026-09-01): own rows — same $10/$50, but cache READS bill at $0.25/M
-  (0.025×, not the standard 0.10×) via a new per-row `cacheReadMult`;
-  previously prefix-matched to the Fable 5 row, over-billing cache reads 4×.
-  **Mythos 5** and the deprecated **Mythos Preview** now price at the Fable
-  tier instead of the $3/$15 unknown-model default.
+  (the scheduled 2026-09-01 step-up to $3/$15 never happened; announced
+  2026-08-10); Pulse had been billing September usage at $3/$15 — fixed.
+  **Fable 5.1 / Mythos 5.1** (2026-09-01): own rows — same $10/$50, but cache
+  READS bill at $0.25/M (0.025×, not the standard 0.10×) via a new per-row
+  `cacheReadMult`; previously prefix-matched to the Fable 5 row, over-billing
+  cache reads 4×. **Mythos 5** now prices at the Fable tier and **Mythos
+  Preview** at its official Project Glasswing price of **$25/$125** — both
+  had fallen to the $3/$15 unknown-model default. **Retired Opus 4 / Sonnet
+  4 dated ids** (`claude-opus-4-20250514`, `claude-4-opus-20250514`,
+  `claude-sonnet-4-20250514`, `claude-4-sonnet-20250514`) get explicit rows:
+  no prefix key covered them, so Opus 4 history was billed 5× under.
+  **Partner-cloud ids** as Claude Code logs them on Bedrock / Vertex
+  (`[us.]anthropic.<id>-v1:0`, `<id>@YYYYMMDD`) now price via the canonical
+  id instead of the unknown-model default.
+- **OpenAI pricing refresh (verified 2026-09-06 against developers.openai.com):**
+  new **GPT-6 Astra** row ($10 / $1 cached / $50; Codex's bundled default
+  since 0.153.4, plus its `-wm` daybreak variant). The **5.6 family price
+  cuts** — Terra $2/$12 and Luna $0.20/$1.20 (2026-07-30), Sol $4/$20
+  (2026-08-21, promotional at least through 2026-11-21) — are **dated**: a
+  new `history` step on a row keeps the price that was actually in force
+  for entries before a cut, so July Codex sessions still bill at July rates.
+  Bare **`gpt-5.6`** is an official alias for Sol (Pulse priced it as
+  Terra). New **`gpt-5.6-cyber` / `gpt-5.5-cyber`** rows ($12.50/$75).
+  **Long-context tier:** Astra, the 5.6 family, gpt-5.5 and gpt-5.4 bill a
+  request whose prompt exceeds 272K tokens at 2× input/cached and 1.5×
+  output — applied per entry off the rollout's prompt size. Bedrock-routed
+  Codex ids (`[us.]openai.<id>`) price via the bare id. Not modelled (no
+  signal in Codex rollouts): OpenAI fast/priority mode and the new 1.25×
+  cache-WRITE surcharge on the API.
 - **US-only inference surcharge:** `usage.inference_geo === "us"` bills every
   token category at 1.1× on 4.6+ models (Claude Code applies it in `/cost`
   since 2.1.239); Pulse now applies it too — to token terms only, never to

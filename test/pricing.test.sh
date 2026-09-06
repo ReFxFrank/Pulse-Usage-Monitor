@@ -54,6 +54,23 @@ lines.push({ type: "assistant", timestamp: "2026-09-16T12:00:00.000Z",
 lines.push({ type: "assistant", timestamp: "2026-09-16T13:00:00.000Z",
   sessionId: "my5-s", requestId: "rmy5", cwd: "/p",
   message: { id: "mmy5", model: "claude-mythos-5", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+// Mythos Preview: official Glasswing price $25/$125 -> 1M+1M = 150 (an exact
+// row; the family prefix must NOT quietly apply the Fable tier).
+lines.push({ type: "assistant", timestamp: "2026-09-17T12:00:00.000Z",
+  sessionId: "myp-s", requestId: "rmyp", cwd: "/p",
+  message: { id: "mmyp", model: "claude-mythos-preview", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+// Retired Opus 4 dated id: no bare prefix key covers it — explicit row -> 90.
+lines.push({ type: "assistant", timestamp: "2026-09-17T13:00:00.000Z",
+  sessionId: "op4-s", requestId: "rop4", cwd: "/p",
+  message: { id: "mop4", model: "claude-opus-4-20250514", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+// Partner-cloud ids (Claude Code on Bedrock / Vertex) price via the canonical
+// id, silently: sonnet-4-5 1M+1M = 18 for both forms.
+lines.push({ type: "assistant", timestamp: "2026-09-17T14:00:00.000Z",
+  sessionId: "br-s", requestId: "rbr", cwd: "/p",
+  message: { id: "mbr", model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+lines.push({ type: "assistant", timestamp: "2026-09-17T15:00:00.000Z",
+  sessionId: "vx-s", requestId: "rvx", cwd: "/p",
+  message: { id: "mvx", model: "claude-sonnet-4-5@20250929", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
 // inference_geo "us": every token category at 1.1x — opus-4-6 1M+1M = 30 -> 33.
 lines.push({ type: "assistant", timestamp: "2026-09-16T14:00:00.000Z",
   sessionId: "geo-s", requestId: "rgeo", cwd: "/p",
@@ -96,25 +113,45 @@ const fs = require("fs");
 const dir = process.argv[1];
 const now = Date.now();
 const iso = (ms) => new Date(ms).toISOString();
-// 1M uncached input + 1M output per model -> cost = input$ + output$
-const MODELS = ["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5",
-                "gpt-5.4","gpt-5.4-mini","gpt-5.3-codex","codex-auto-review"];
-const lines = [{ timestamp: iso(now - 3600e3), type: "session_meta",
-                 payload: { session_id: "price-1", cwd: "/p" } }];
-let cum = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-MODELS.forEach((m, i) => {
-  const t = now - 3600e3 + (i + 1) * 60e3;
-  lines.push({ timestamp: iso(t), type: "turn_context",
-    payload: { turn_id: "t" + i, model: m,
-               collaboration_mode: { mode: "default", settings: { model: m, reasoning_effort: "medium" } } } });
-  const u = { input_tokens: 1000000, cached_input_tokens: 0, output_tokens: 1000000, total_tokens: 2000000 };
-  cum = { input_tokens: cum.input_tokens + u.input_tokens, cached_input_tokens: 0,
-          output_tokens: cum.output_tokens + u.output_tokens, total_tokens: cum.total_tokens + u.total_tokens };
-  lines.push({ timestamp: iso(t + 30e3), type: "event_msg",
-    payload: { type: "token_count", info: { last_token_usage: u, total_token_usage: { ...cum } } } });
-});
-fs.writeFileSync(dir + "/sessions/2026/07/15/rollout-price.jsonl",
-  lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+// Per model: [id, uncached input, output, cached input]. Prompts stay UNDER
+// the 272K long-context threshold (100K + cached) so each row asserts its
+// plain rate: cost = 0.1*input$ + output$ (+ 0.1*cached$ where cached).
+// Entries are stamped "now" -> current (post-cut) prices; a second rollout
+// below is pinned to 2026-07-15 to assert the pre-cut history steps.
+const MODELS = [
+  ["gpt-5.6-sol", 100000, 1000000, 0], ["gpt-5.6-terra", 100000, 1000000, 0], ["gpt-5.6-luna", 100000, 1000000, 0],
+  ["gpt-5.5", 100000, 1000000, 0], ["gpt-5.4", 100000, 1000000, 0], ["gpt-5.4-mini", 100000, 1000000, 0],
+  ["gpt-5.3-codex", 100000, 1000000, 0], ["codex-auto-review", 100000, 1000000, 0],
+  // GPT-6 Astra: 100K in + 1M out + 100K cached (200K prompt, short context)
+  ["gpt-6-astra", 100000, 1000000, 100000],
+  ["gpt-6-astra-wm", 100000, 1000000, 0],          // Codex daybreak variant -> Astra rate
+  ["gpt-5.6", 100000, 1000000, 0],                 // official alias of Sol
+  ["gpt-5.6-cyber", 100000, 1000000, 0],
+  ["us.openai.gpt-5.6-terra", 100000, 1000000, 0], // Bedrock-routed id -> canonical lookup
+  // long-context: 300K prompt on a dated gpt-5.4 snapshot -> 2x in / 1.5x out
+  ["gpt-5.4-2026-03-05", 300000, 100000, 0],
+];
+const rollout = (sid, base, models) => {
+  const lines = [{ timestamp: iso(base - 60e3), type: "session_meta", payload: { session_id: sid, cwd: "/p" } }];
+  let cum = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  models.forEach(([m, inp, out, cached], i) => {
+    const t = base + (i + 1) * 60e3;
+    lines.push({ timestamp: iso(t), type: "turn_context",
+      payload: { turn_id: sid + "-t" + i, model: m,
+                 collaboration_mode: { mode: "default", settings: { model: m, reasoning_effort: "medium" } } } });
+    const u = { input_tokens: inp + cached, cached_input_tokens: cached, output_tokens: out, total_tokens: inp + cached + out };
+    cum = { input_tokens: cum.input_tokens + u.input_tokens, cached_input_tokens: cum.cached_input_tokens + cached,
+            output_tokens: cum.output_tokens + u.output_tokens, total_tokens: cum.total_tokens + u.total_tokens };
+    lines.push({ timestamp: iso(t + 30e3), type: "event_msg",
+      payload: { type: "token_count", info: { last_token_usage: u, total_token_usage: { ...cum } } } });
+  });
+  return lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
+};
+fs.writeFileSync(dir + "/sessions/2026/07/15/rollout-price.jsonl", rollout("price-1", now - 3600e3, MODELS));
+// Pre-cut history: the 5.6 family billed at its July rates for July entries.
+fs.writeFileSync(dir + "/sessions/2026/07/15/rollout-history.jsonl",
+  rollout("price-jul", Date.parse("2026-07-15T12:00:00.000Z"),
+    [["gpt-5.6-sol", 100000, 1000000, 0], ["gpt-5.6-terra", 100000, 1000000, 0], ["gpt-5.6-luna", 100000, 1000000, 0]]));
 ' "$CX"
 
 PORT=4882
@@ -130,12 +167,23 @@ const s = require(process.argv[1] + "/out.json");
 const log = require("fs").readFileSync(process.argv[1] + "/srv.log", "utf8");
 let fail = 0;
 const ok = (cond, msg) => { console.log((cond ? "PASS" : "FAIL") + "  " + msg); if (!cond) fail = 1; };
-const WANT = { "gpt-5.6-sol": 35, "gpt-5.6-terra": 17.5, "gpt-5.6-luna": 7, "gpt-5.5": 35,
-               "gpt-5.4": 17.5, "gpt-5.4-mini": 5.25, "gpt-5.3-codex": 15.75, "codex-auto-review": 17.5 };
+// 0.1*input$ + output$ (+0.1*cached$) at the CURRENT (post-cut) rates:
+const WANT = { "gpt-5.6-sol": 20.4, "gpt-5.6-terra": 12.2, "gpt-5.6-luna": 1.22, "gpt-5.5": 30.5,
+               "gpt-5.4": 15.25, "gpt-5.4-mini": 4.575, "gpt-5.3-codex": 14.175, "codex-auto-review": 15.25,
+               "gpt-6-astra": 51.1, "gpt-6-astra-wm": 51, "gpt-5.6": 20.4, "gpt-5.6-cyber": 76.25,
+               "us.openai.gpt-5.6-terra": 12.2,
+               // 300K prompt > 272K: 300K x $5 + 100K x $22.50 = 1.5 + 2.25
+               "gpt-5.4-2026-03-05": 3.75 };
 const rows = (s.periods && s.periods[0] && s.periods[0].byModel) || {};
 for (const [m, want] of Object.entries(WANT)) {
   const r = rows[m];
   ok(r && Math.abs(r.cost - want) < 0.005, m + " costs $" + want + " (got " + (r ? r.cost.toFixed(2) : "missing") + ")");
+}
+// Pre-cut history steps: July entries keep the July prices (5/30, 2.5/15, 1/6).
+const jul26 = ((s.periods || []).find((p) => p.key === "2026-07") || {}).byModel || {};
+for (const [m, want] of Object.entries({ "gpt-5.6-sol": 30.5, "gpt-5.6-terra": 15.25, "gpt-5.6-luna": 6.1 })) {
+  const r = jul26[m];
+  ok(r && Math.abs(r.cost - want) < 0.005, m + " July 2026 entry at the PRE-cut rate $" + want + " (got " + (r ? r.cost.toFixed(2) : "missing") + ")");
 }
 // GLM via ~/.claude — Z.ai list prices (input$ + output$ for 1M+1M):
 const GLM = { "glm-4.6": 2.8, "glm-4.5": 2.8, "glm-4.5-air": 1.3, "glm-4.5-x": 11.1, "glm-5": 4.2, "glm-4.7-flash": 0 };
@@ -179,6 +227,12 @@ const my5 = (mon("2026-09").byModel || {})["claude-mythos-5"];
 ok(my5 && Math.abs(my5.cost - 60) < 0.005, "mythos-5 priced at the Fable tier 10/50 = 60 (got " + (my5 ? my5.cost.toFixed(2) : "missing") + ")");
 const geo = (mon("2026-09").byModel || {})["claude-opus-4-6"];
 ok(geo && Math.abs(geo.cost - 33) < 0.005, "inference_geo us: opus-4-6 1M+1M = 30 x 1.1 = 33 (got " + (geo ? geo.cost.toFixed(2) : "missing") + ")");
+const sep26 = mon("2026-09").byModel || {};
+for (const [m, want] of Object.entries({ "claude-mythos-preview": 150, "claude-opus-4-20250514": 90,
+                                          "us.anthropic.claude-sonnet-4-5-20250929-v1:0": 18, "claude-sonnet-4-5@20250929": 18 })) {
+  const r = sep26[m];
+  ok(r && Math.abs(r.cost - want) < 0.005, m + " = $" + want + " (got " + (r ? r.cost.toFixed(2) : "missing") + ")");
+}
 // Opus 5: standard 5/25, and the fast-mode premium 10/50 applied off
 // usage.speed — the same 1M+1M entry must cost exactly double when fast.
 const o5std = (mon("2026-05").byModel || {})["claude-opus-5"];

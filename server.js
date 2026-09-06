@@ -200,22 +200,23 @@ const PRICING = {
   // which falls out of pricing cache tokens off price.input (per the docs).
   // cacheReadMult = per-row cache-READ multiplier when a model departs from the
   // standard 0.10×: Fable 5.1 / Mythos 5.1 bill cache reads at $0.25/M (0.025×).
-  // Mythos = the Glasswing-only twins of Fable (same list price); the bare
-  // 'claude-mythos' row catches the deprecated claude-mythos-preview, which has
-  // no published price — priced at the tier every Mythos model sits in rather
-  // than the $3/$15 default it would otherwise fall to.
+  // Mythos = the Glasswing-only twins of Fable (same list price). Mythos
+  // Preview (deprecated → Mythos 5) is priced per Anthropic's Project Glasswing
+  // page: $25/$125 — its cache multipliers were never published (standard
+  // 1.25×/2×/0.1× assumed). Explicit keys only: an unknown future mythos id
+  // must still LOG rather than silently take a guessed rate.
   'claude-fable-5-1':  { input: 10, output: 50, cacheReadMult: 0.025 },
   'claude-mythos-5-1': { input: 10, output: 50, cacheReadMult: 0.025 },
   'claude-fable-5':    { input: 10, output: 50 },
   'claude-mythos-5':   { input: 10, output: 50 },
-  'claude-mythos':     { input: 10, output: 50 },
+  'claude-mythos-preview': { input: 25, output: 125 },
   'claude-opus-5':     { input: 5,  output: 25, fastInput: 10, fastOutput: 50 },
   'claude-opus-4-8':   { input: 5,  output: 25, fastInput: 10, fastOutput: 50 },
   'claude-opus-4-7':   { input: 5,  output: 25 },
   'claude-opus-4-6':   { input: 5,  output: 25 },
   'claude-opus-4-5':   { input: 5,  output: 25 },
   // Sonnet 5 launched at an "introductory" $2/$10 through 2026-08-31; on
-  // 2026-08-11 Anthropic made that the permanent list price (the scheduled
+  // 2026-08-10 Anthropic made that the permanent list price (the scheduled
   // $3/$15 step-up never happened), so the row is plain. priceFor still
   // honours intro* fields for any future time-limited launch price.
   'claude-sonnet-5':   { input: 2,  output: 10 },
@@ -227,6 +228,14 @@ const PRICING = {
   'claude-opus-4-1':   { input: 15, output: 75 },
   'claude-opus-4-0':   { input: 15, output: 75 },
   'claude-sonnet-4-0': { input: 3,  output: 15 },
+  // Retired Opus 4 / Sonnet 4 dated + alternate ids. No bare 'claude-opus-4'
+  // key prefixes them (…-4-0/-4-1/-4-5 do not prefix a '-4-2025…' string), so
+  // without explicit rows they fell to __default__ — Opus 4 history billed 5×
+  // under. Explicit (not a bare prefix) so an unknown future 4.x id still logs.
+  'claude-opus-4-20250514':   { input: 15, output: 75 },
+  'claude-4-opus-20250514':   { input: 15, output: 75 },
+  'claude-sonnet-4-20250514': { input: 3,  output: 15 },
+  'claude-4-sonnet-20250514': { input: 3,  output: 15 },
   'claude-3-7-sonnet': { input: 3,  output: 15 },
   'claude-3-5-sonnet': { input: 3,  output: 15 },
   'claude-3-5-haiku':  { input: 0.8, output: 4 },
@@ -300,14 +309,26 @@ function localDateStr(ts) {
 
 // Resolve the {input, output} price for a model at a given entry timestamp,
 // honouring any time-limited introductory price.
+// Partner-cloud forms of a Claude id, as Claude Code logs them on Bedrock /
+// Vertex: "[global.|us.|eu.|apac.|jp.]anthropic.<id>[-v1[:0]]" and
+// "<id>@YYYYMMDD". Reduced to the canonical id for the price lookup ONLY —
+// the raw string stays the display model everywhere else.
+function canonicalClaudeModel(model) {
+  if (!model) return model;
+  return model
+    .replace(/^(?:global|us|eu|apac|jp)\.anthropic\./, '').replace(/^anthropic\./, '')
+    .replace(/-v\d+(?::\d+)?$/, '')
+    .replace(/@(\d{8})$/, '-$1');
+}
 function priceFor(model, ts, speed) {
-  let p = PRICING[model];
-  if (!p && model) {
+  const m = canonicalClaudeModel(model);
+  let p = PRICING[m];
+  if (!p && m) {
     // Dated / suffixed variants (e.g. claude-haiku-4-5-20251001) price as their
     // base model: longest PRICING key that prefixes the model string wins.
     let best = '';
     for (const key of Object.keys(PRICING)) {
-      if (key !== '__default__' && model.startsWith(key) && key.length > best.length) best = key;
+      if (key !== '__default__' && m.startsWith(key) && key.length > best.length) best = key;
     }
     if (best) p = PRICING[best];
   }
@@ -348,15 +369,7 @@ function claudeTokenCost(e, price) {
 // §5 per-entry cost. Cache-creation tokens without a TTL breakdown are treated
 // as 5-minute writes (×1.25) — documented assumption, handled at normalize().
 function costForEntry(e) {
-  if (e.provider === 'openai') {
-    const p = priceForOpenAI(e.model);
-    const cachedPrice = p.cachedInput != null ? p.cachedInput : p.input * OPENAI_CACHE_READ_MULT;
-    return (
-      (e.inputTokens  / 1e6) * p.input +
-      (e.outputTokens / 1e6) * p.output +
-      (e.cacheRead    / 1e6) * cachedPrice
-    );
-  }
+  if (e.provider === 'openai') return openaiTokenCost(e, priceForOpenAI(e.model, e.ts));
   if (e.provider === 'google') {
     const p = priceForGoogle(e.model);
     // Gemini context caching bills cached input at ~10% of the input rate.
@@ -387,15 +400,19 @@ function cacheEconomicsForEntry(e) {
   // cost shown beside it. No price row we trust ⇒ no savings claim.
   if (e.costFromSource) return { read: 0, saved: 0, writePremium: 0 };
   if (e.provider === 'openai' || e.provider === 'google') {
-    const p = e.provider === 'openai' ? priceForOpenAI(e.model) : priceForGoogle(e.model);
+    const p = e.provider === 'openai' ? priceForOpenAI(e.model, e.ts) : priceForGoogle(e.model);
     const mult = e.provider === 'openai' ? OPENAI_CACHE_READ_MULT : GOOGLE_CACHE_READ_MULT;
     const cached = p.cachedInput != null ? p.cachedInput : p.input * mult;
+    // The long-context tier scales the input AND cached rates alike, so the
+    // read saving scales with it (openaiTokenCost applies the same test).
+    const im = e.provider === 'openai' && p.longContext && (e.inputTokens + e.cacheRead) > OPENAI_LONG_CONTEXT_TOKENS
+      ? OPENAI_LONG_CTX_INPUT_MULT : 1;
     // Neither provider bills a cache-WRITE surcharge (caching is implicit), so
     // there is no premium to net off — only the read discount is real.
     // read is reported only when the input price is non-zero: a free row saves
     // nothing, and counting its reads would pad the "off N cached read tokens"
     // denominator with tokens that contributed $0 of the savings above it.
-    return { read: p.input > 0 ? read : 0, saved: (read / 1e6) * (p.input - cached), writePremium: 0 };
+    return { read: p.input > 0 ? read : 0, saved: (read / 1e6) * (p.input - cached) * im, writePremium: 0 };
   }
   const price = priceFor(e.model, e.ts, e.speed);
   const geo = e.geoUs ? INFERENCE_GEO_US_MULT : 1; // the surcharge scales savings and premiums alike
@@ -430,20 +447,47 @@ function standardCostForEntry(e) {
 // input across the lineup: 10% for gpt-5 family, 25% for o3/o4-mini/gpt-4.1,
 // 50% for gpt-4o/o3-mini; models without cache discounts bill cached at full
 // input price). Rows without cachedInput default to 10% of input.
+//   longContext: true — the model has a >272K-input tier: a request whose
+//   prompt (uncached + cached input) exceeds OPENAI_LONG_CONTEXT_TOKENS bills
+//   the WHOLE request at 2× input/cached and 1.5× output (every such model
+//   publishes exactly those multiples). Applied per entry in openaiTokenCost.
+//   history: [{ until, ...price }] — OLDER prices, each in force through its
+//   `until` (inclusive, entry-local date); an entry dated before a price cut
+//   keeps the rate it was actually billed at (priceStep). Ascending by until.
+// Verified 2026-09-06 against developers.openai.com model pages + pricing page.
+const GPT56_SOL = {
+  // Cut 2026-08-21 from $5/$30 — "promotional pricing available at least
+  // through November 21, 2026": re-check then; if it reverts, add a step.
+  input: 4, output: 20, cachedInput: 0.4, longContext: true,
+  history: [{ until: '2026-08-20', input: 5, output: 30, cachedInput: 0.5 }],
+};
 const PRICING_OPENAI = {
-  // Codex defaults (gpt-5.x family) — list prices as of July 2026.
-  'gpt-5.6-sol':        { input: 5,    output: 30,  cachedInput: 0.5 },
-  'gpt-5.6-terra':      { input: 2.5,  output: 15,  cachedInput: 0.25 },
-  'gpt-5.6-luna':       { input: 1,    output: 6,   cachedInput: 0.1 },
-  // Bare "gpt-5.6" is not an official API id (the family ships as
-  // sol/terra/luna) — priced as terra, the mainstream tier.
-  'gpt-5.6':            { input: 2.5,  output: 15,  cachedInput: 0.25 },
+  // GPT-6 Astra (2026-09-03) — Codex's bundled default since 0.153.4
+  // (2026-09-04). "-wm" is Codex's undocumented daybreak variant of the same
+  // model (codex-rs daybreak.rs maps both ids to Astra) — priced identically.
+  'gpt-6-astra':        { input: 10,   output: 50,  cachedInput: 1, longContext: true },
+  'gpt-6-astra-wm':     { input: 10,   output: 50,  cachedInput: 1, longContext: true },
+  // GPT-5.6 family (GA 2026-07-09). Terra and Luna were cut 2026-07-30 (−20% /
+  // −80%); Sol on 2026-08-21. Bare "gpt-5.6" is an OFFICIAL alias for Sol
+  // (model page, API changelog, models overview) — same row object.
+  'gpt-5.6-sol':        GPT56_SOL,
+  'gpt-5.6':            GPT56_SOL,
+  'gpt-5.6-terra':      { input: 2,    output: 12,  cachedInput: 0.2, longContext: true,
+                          history: [{ until: '2026-07-29', input: 2.5, output: 15, cachedInput: 0.25 }] },
+  'gpt-5.6-luna':       { input: 0.2,  output: 1.2, cachedInput: 0.02, longContext: true,
+                          history: [{ until: '2026-07-29', input: 1, output: 6, cachedInput: 0.1 }] },
+  // Cyber (Daybreak Red, separately provisioned; Responses API only; 400K
+  // window with a 272K max input, so no long-context tier; no fast mode).
+  'gpt-5.6-cyber':      { input: 12.5, output: 75,  cachedInput: 1.25 },
+  'gpt-5.5-cyber':      { input: 12.5, output: 75,  cachedInput: 1.25 },
   'gpt-5.5-pro':        { input: 30,   output: 180, cachedInput: 30 },
-  'gpt-5.5':            { input: 5,    output: 30,  cachedInput: 0.5 },
+  'gpt-5.5':            { input: 5,    output: 30,  cachedInput: 0.5, longContext: true },
+  // gpt-5.4 / -mini retired from Codex (ChatGPT sign-in) 2026-08-31 → terra /
+  // luna; still on the API, prices unchanged.
   'gpt-5.4-mini':       { input: 0.75, output: 4.5, cachedInput: 0.075 },
   'gpt-5.4-nano':       { input: 0.2,  output: 1.25, cachedInput: 0.02 },
   'gpt-5.4-pro':        { input: 30,   output: 180, cachedInput: 30 },
-  'gpt-5.4':            { input: 2.5,  output: 15,  cachedInput: 0.25 },
+  'gpt-5.4':            { input: 2.5,  output: 15,  cachedInput: 0.25, longContext: true },
   'gpt-5.3-codex':      { input: 1.75, output: 14,  cachedInput: 0.175 },
   // Codex's sandbox auto-reviewer: runs GPT-5.4 (low reasoning), which has no
   // published row of its own — priced at gpt-5.4 rates.
@@ -460,7 +504,10 @@ const PRICING_OPENAI = {
   'codex-mini-latest':  { input: 1.5,  output: 6,   cachedInput: 0.375 },
   // Older strings that can appear in history. NOTE: unlike Anthropic's dated
   // snapshots, OpenAI suffixes (-mini/-pro/-nano) are DIFFERENT models at
-  // different prices — each needs its own exact row.
+  // different prices — each needs its own exact row. Shutdowns (prices hold
+  // until then; rows stay for history): o3-mini + o4-mini 2026-10-23; the
+  // dated gpt-5 / gpt-5-mini / gpt-5-nano / gpt-5-pro / o3 / o3-pro snapshots
+  // 2026-12-11 (→ the 5.6 family).
   'o3-deep-research':   { input: 10,   output: 40,  cachedInput: 2.5 },
   'o3-mini':            { input: 1.1,  output: 4.4, cachedInput: 0.55 },
   'o3-pro':             { input: 20,   output: 80,  cachedInput: 20 },
@@ -475,18 +522,39 @@ const PRICING_OPENAI = {
   '__default__':        { input: 1.25, output: 10 },
 };
 const OPENAI_CACHE_READ_MULT = 0.10; // default when a row has no cachedInput
+// Long-context tier (rows flagged longContext): prompt > 272K tokens bills the
+// whole request at 2× input/cached, 1.5× output.
+const OPENAI_LONG_CONTEXT_TOKENS = 272000;
+const OPENAI_LONG_CTX_INPUT_MULT = 2;
+const OPENAI_LONG_CTX_OUTPUT_MULT = 1.5;
 
-function priceForOpenAI(model) {
-  let p = PRICING_OPENAI[model];
-  if (!p) {
+// Bedrock-routed Codex sessions log "[global.|us.|eu.]openai.<id>" — reduced
+// to the bare id for the lookup only (raw string stays the display model).
+function canonicalOpenAIModel(model) {
+  return model ? model.replace(/^(?:global|us|eu)\.openai\./, '').replace(/^openai\./, '') : model;
+}
+// The price in force at an entry's own date: `history` steps are older prices,
+// each valid through its `until` (inclusive); the first step the date falls
+// within wins, else the row's current price. The step inherits row-level
+// flags (longContext) it doesn't restate.
+function priceStep(p, ts) {
+  if (!p.history || ts == null) return p;
+  const ds = localDateStr(ts);
+  for (const h of p.history) if (ds <= h.until) return { ...p, ...h, history: undefined };
+  return p;
+}
+function priceForOpenAI(model, ts) {
+  const m = canonicalOpenAIModel(model);
+  let p = PRICING_OPENAI[m];
+  if (!p && m) {
     // Prefix fallback ONLY for dated snapshots ("gpt-4.1-2025-04-14"). OpenAI
     // family suffixes (-mini/-pro/-nano) are different models at different
     // prices, so any non-date remainder falls through to the logged default —
     // mispricing must be visible, never silent.
     let best = '';
     for (const key of Object.keys(PRICING_OPENAI)) {
-      if (key === '__default__' || !model.startsWith(key) || key.length <= best.length) continue;
-      const rest = model.slice(key.length);
+      if (key === '__default__' || !m.startsWith(key) || key.length <= best.length) continue;
+      const rest = m.slice(key.length);
       if (/^-(\d{4}-\d{2}-\d{2}|\d{8})$/.test(rest)) best = key;
     }
     if (best) p = PRICING_OPENAI[best];
@@ -495,7 +563,22 @@ function priceForOpenAI(model) {
     logUnknownModel(model);
     p = PRICING_OPENAI.__default__;
   }
-  return p;
+  return priceStep(p, ts);
+}
+// OpenAI token cost at a resolved row. Cached input bills at the row's own
+// published rate; the long-context tier scales the whole request. Rollouts
+// carry no cache-WRITE counts (and Codex-via-ChatGPT bills none), so the
+// 1.25× write surcharge Astra / 5.6 publish for the API is not modelled.
+function openaiTokenCost(e, p) {
+  const cachedPrice = p.cachedInput != null ? p.cachedInput : p.input * OPENAI_CACHE_READ_MULT;
+  const long = !!p.longContext && (e.inputTokens + e.cacheRead) > OPENAI_LONG_CONTEXT_TOKENS;
+  const im = long ? OPENAI_LONG_CTX_INPUT_MULT : 1;
+  const om = long ? OPENAI_LONG_CTX_OUTPUT_MULT : 1;
+  return (
+    (e.inputTokens  / 1e6) * p.input * im +
+    (e.outputTokens / 1e6) * p.output * om +
+    (e.cacheRead    / 1e6) * cachedPrice * im
+  );
 }
 
 // ---------------------------------------------------------------------------

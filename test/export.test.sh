@@ -25,7 +25,9 @@ fs.writeFileSync(process.argv[1] + "/projects/demo/s.jsonl", [
 ].map(JSON.stringify).join("\n") + "\n");
 ' "$CL"
 
-# Codex (source codex): gpt-5.6-luna ($1/$6) 1M in + 1M out = $7 today.
+# Codex (source codex): gpt-5.6-luna ($0.20/$1.20 since 2026-07-30) 1M in +
+# 1M out — a 1M-token prompt is over the 272K long-context threshold, so the
+# whole request bills at 2x input / 1.5x output: 0.40 + 1.80 = $2.20 today.
 node -e '
 const fs = require("fs"); const now = Date.now();
 const iso = (ms) => new Date(ms).toISOString();
@@ -75,13 +77,13 @@ const today = new Date(); const ds = today.getFullYear() + "-" +
 const trow = dlines.find((l) => l.startsWith(ds + ","));
 ok(!!trow, "daily CSV has a row for today");
 const tc = (trow || "").split(",");
-ok(trow && near(+tc[1], 13) && near(+tc[3], 6) && near(+tc[4], 7),
-   "today: total 13 = cli 6 + codex 7 (got " + trow + ")");
+ok(trow && near(+tc[1], 8.2) && near(+tc[3], 6) && near(+tc[4], 2.2),
+   "today: total 8.2 = cli 6 + codex 2.2 (got " + trow + ")");
 
 const models = fs.readFileSync(T + "/models.csv", "utf8").slice(1).split("\r\n").filter(Boolean);
 ok(models[0] === "model,cost_usd,tokens,messages", "models header");
 const luna = models.find((l) => l.startsWith("gpt-5.6-luna,"));
-ok(luna && near(+luna.split(",")[1], 7), "models CSV: gpt-5.6-luna costs 7 (got " + luna + ")");
+ok(luna && near(+luna.split(",")[1], 2.2), "models CSV: gpt-5.6-luna costs 2.2 (long-context tier) (got " + luna + ")");
 const fable = models.find((l) => l.startsWith("claude-fable-5,"));
 ok(fable && near(+fable.split(",")[1], 6), "models CSV: claude-fable-5 costs 6 (got " + fable + ")");
 

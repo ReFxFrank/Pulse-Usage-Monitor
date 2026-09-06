@@ -13,7 +13,7 @@ import(pathToFileURL(modPath).href).then(({ modelFamily, FAMILY_META }) => {
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + "  " + m); if (!c) fail = 1; };
 const CASES = {
-  "claude-fable-5": "claude", "claude-fable-5-1": "claude", "claude-mythos-5-1": "claude", "mythos-5": "claude", "claude-opus-4-8": "claude", "claude-haiku-4-5": "claude", "anthropic/claude-x": "claude",
+  "gpt-6-astra": "openai", "us.openai.gpt-6-astra": "openai", "claude-fable-5": "claude", "claude-fable-5-1": "claude", "claude-mythos-5-1": "claude", "mythos-5": "claude", "claude-opus-4-8": "claude", "claude-haiku-4-5": "claude", "anthropic/claude-x": "claude",
   "gpt-5.6-sol": "openai", "o3-mini": "openai", "codex-mini-latest": "openai", "chatgpt-4o": "openai", "gpt-4.1": "openai",
   "gemini-3-pro": "google", "gemini-2.5-flash": "google", "gemma-3-27b": "google",
   "deepseek-v3": "deepseek", "deepseek-r1": "deepseek",

@@ -5,7 +5,7 @@
 export function modelFamily(model) {
   const m = String(model || '').toLowerCase();
   if (/claude|anthropic|^fable|^mythos|^opus|^sonnet|^haiku/.test(m)) return 'claude';
-  if (/^gpt|^o\d|codex|chatgpt|davinci|^text-/.test(m)) return 'openai';
+  if (/^gpt|^o\d|codex|chatgpt|davinci|^text-|openai/.test(m)) return 'openai';
   if (/gemini|^gemma|palm|bison/.test(m)) return 'google';
   if (/deepseek/.test(m)) return 'deepseek';
   if (/glm|chatglm|zhipu|z-ai|z\.ai/.test(m)) return 'glm';
