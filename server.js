@@ -310,13 +310,15 @@ function localDateStr(ts) {
 // Resolve the {input, output} price for a model at a given entry timestamp,
 // honouring any time-limited introductory price.
 // Partner-cloud forms of a Claude id, as Claude Code logs them on Bedrock /
-// Vertex: "[global.|us.|eu.|apac.|jp.]anthropic.<id>[-v1[:0]]" and
-// "<id>@YYYYMMDD". Reduced to the canonical id for the price lookup ONLY —
-// the raw string stays the display model everywhere else.
+// Vertex: "[<region>.]anthropic.<id>[-v1[:0]]" and "<id>@YYYYMMDD". The region
+// prefix is matched generically (global./us./eu./apac./jp., but also us-gov.
+// on GovCloud and au. — AWS keeps adding them) so a new one can never silently
+// drop an id onto the $3/$15 default. Reduced to the canonical id for the
+// price lookup ONLY — the raw string stays the display model everywhere else.
 function canonicalClaudeModel(model) {
   if (!model) return model;
   return model
-    .replace(/^(?:global|us|eu|apac|jp)\.anthropic\./, '').replace(/^anthropic\./, '')
+    .replace(/^(?:[a-z]+(?:-[a-z]+)*\.)?anthropic\./, '')
     .replace(/-v\d+(?::\d+)?$/, '')
     .replace(/@(\d{8})$/, '-$1');
 }
@@ -528,10 +530,11 @@ const OPENAI_LONG_CONTEXT_TOKENS = 272000;
 const OPENAI_LONG_CTX_INPUT_MULT = 2;
 const OPENAI_LONG_CTX_OUTPUT_MULT = 1.5;
 
-// Bedrock-routed Codex sessions log "[global.|us.|eu.]openai.<id>" — reduced
-// to the bare id for the lookup only (raw string stays the display model).
+// Bedrock-routed Codex sessions log "[<region>.]openai.<id>" — reduced to the
+// bare id for the lookup only (raw string stays the display model). Same
+// generic region match as the Claude side.
 function canonicalOpenAIModel(model) {
-  return model ? model.replace(/^(?:global|us|eu)\.openai\./, '').replace(/^openai\./, '') : model;
+  return model ? model.replace(/^(?:[a-z]+(?:-[a-z]+)*\.)?openai\./, '') : model;
 }
 // The price in force at an entry's own date: `history` steps are older prices,
 // each valid through its `until` (inclusive); the first step the date falls
@@ -2498,14 +2501,23 @@ function indexCells(rows) {
   }
   return o;
 }
-// Pruning only ever removes messages, so the observation with MORE messages
-// (tie: more cost) is the more complete one. The est/c marks are facts about
-// the cell's IDENTITY (estimated counts / custom source), not its completeness
-// — never lose them to whichever observation happened to be fuller.
+// Pruning only ever removes messages, so the observation with MORE messages is
+// the more complete one and wins. On an EQUAL count the two describe the same
+// requests, and `a` — the LIVE (read paths) or freshly-sealed (mergeDayRecord)
+// side at EVERY call site — wins: its cost was just computed from the current
+// price table, while the archived copy carries whatever price was in force the
+// day it was sealed. The old tie-break kept the DEARER row, so a price cut
+// (Sonnet 5, the GPT-5.6 family) could never reach an already-sealed day and
+// the non-shrinking re-seal made the stale figure permanent. A day whose live
+// logs have already pruned keeps its sealed cost — the archive stores no token
+// breakdown to re-price from.
+// The est/c marks are facts about the cell's IDENTITY (estimated counts /
+// custom source), not its completeness — never lose them to whichever
+// observation happened to be fuller.
 function pickCell(a, b) {
   if (!a) return b;
   if (!b) return a;
-  const win = (b.messages > a.messages || (b.messages === a.messages && b.cost > a.cost)) ? b : a;
+  const win = b.messages > a.messages ? b : a;
   if ((a.est || b.est) && !win.est) win.est = 1;
   if ((a.c || b.c) && !win.c) win.c = 1;
   return win;
@@ -2516,7 +2528,9 @@ function pickCell(a, b) {
 function mergeDayRecord(existing, fresh, customNames) {
   if (!existing || !Array.isArray(existing.rows)) return fresh;
   const cells = indexCells(existing.rows);
-  for (const r of fresh.rows) { const k = cellKey(r.source, r.model); cells[k] = pickCell(cells[k], r); }
+  // Fresh first: pickCell's tie-break keeps argument `a`, so a re-seal at
+  // today's prices overwrites a stale-priced archived row of the same size.
+  for (const r of fresh.rows) { const k = cellKey(r.source, r.model); cells[k] = pickCell(r, cells[k]); }
   let rows = Object.values(cells);
   // A custom-flagged cell whose source is no longer configured is the
   // pre-rename identity of data the fresh seal carries under the new name —

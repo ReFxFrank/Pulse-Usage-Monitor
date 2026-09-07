@@ -47,6 +47,23 @@
   them as "Claude · nimbus quill" 0% rows; an undisclosed bucket appears only
   once it carries real usage. New documented key `seven_day_cowork` gets a
   proper "weekly · Cowork" label.
+- **A price change now reaches already-sealed days** (found by the pre-release
+  adversarial review, and it would have silently defeated most of this
+  release): the live/archive merge broke an equal-message tie by keeping the
+  DEARER row, so a day already sealed into `~/.pulse/history` at the old
+  inflated price beat the freshly re-priced live entries — and the
+  non-shrinking re-seal made that permanent. Ties now go to the live /
+  freshly-sealed side, whose cost was just computed from the current table, so
+  every correction above applies to days still in your logs and the month file
+  heals on the next seal. An archived cell with MORE messages still wins (the
+  non-shrinking guarantee is intact), and a day whose logs have already pruned
+  keeps its sealed cost — the archive stores no token breakdown to re-price
+  from.
+- Partner-cloud ids with a hyphenated region prefix (`us-gov.anthropic.…` on
+  AWS GovCloud, `au.…`) reduce to the canonical id too — they had been
+  falling to the $3/$15 unknown-model default (a 3× over-bill on Haiku, 5×
+  under on Opus). The region prefix is now matched generically for both
+  Anthropic and OpenAI ids, so a new AWS region can't silently mis-price.
 - Model-family classifier recognizes bare `mythos-*` ids as Anthropic.
 - Meshy suite: the fixture now clamps its week tasks to the current calendar
   month, so it no longer fails when run on the 1st–7th (its month == week

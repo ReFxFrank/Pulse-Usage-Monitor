@@ -71,6 +71,11 @@ lines.push({ type: "assistant", timestamp: "2026-09-17T14:00:00.000Z",
 lines.push({ type: "assistant", timestamp: "2026-09-17T15:00:00.000Z",
   sessionId: "vx-s", requestId: "rvx", cwd: "/p",
   message: { id: "mvx", model: "claude-sonnet-4-5@20250929", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
+// GovCloud ("us-gov.") and other hyphenated region prefixes must reduce too —
+// haiku-4-5 $1/$5 -> 1M+1M = 6, NOT the $3/$15 default (a 3x over-bill).
+lines.push({ type: "assistant", timestamp: "2026-09-17T16:00:00.000Z",
+  sessionId: "gov-s", requestId: "rgov", cwd: "/p",
+  message: { id: "mgov", model: "us-gov.anthropic.claude-haiku-4-5-20251001-v1:0", usage: { input_tokens: 1000000, output_tokens: 1000000 } } });
 // inference_geo "us": every token category at 1.1x — opus-4-6 1M+1M = 30 -> 33.
 lines.push({ type: "assistant", timestamp: "2026-09-16T14:00:00.000Z",
   sessionId: "geo-s", requestId: "rgeo", cwd: "/p",
@@ -229,7 +234,8 @@ const geo = (mon("2026-09").byModel || {})["claude-opus-4-6"];
 ok(geo && Math.abs(geo.cost - 33) < 0.005, "inference_geo us: opus-4-6 1M+1M = 30 x 1.1 = 33 (got " + (geo ? geo.cost.toFixed(2) : "missing") + ")");
 const sep26 = mon("2026-09").byModel || {};
 for (const [m, want] of Object.entries({ "claude-mythos-preview": 150, "claude-opus-4-20250514": 90,
-                                          "us.anthropic.claude-sonnet-4-5-20250929-v1:0": 18, "claude-sonnet-4-5@20250929": 18 })) {
+                                          "us.anthropic.claude-sonnet-4-5-20250929-v1:0": 18, "claude-sonnet-4-5@20250929": 18,
+                                          "us-gov.anthropic.claude-haiku-4-5-20251001-v1:0": 6 })) {
   const r = sep26[m];
   ok(r && Math.abs(r.cost - want) < 0.005, m + " = $" + want + " (got " + (r ? r.cost.toFixed(2) : "missing") + ")");
 }
